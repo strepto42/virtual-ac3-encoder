@@ -2,31 +2,45 @@ name: Release
 
 on:
   push:
-    tags: [ 'v*' ]
+    branches: [ main ]      # every merge to main -> tag + build + release
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version, e.g. 0.1.0 (a v<version> tag/release is created)'
-        required: true
+        description: 'Explicit version e.g. 0.2.0 (default: auto patch-bump from latest release)'
+        required: false
 
 permissions:
-  contents: write   # create releases + tags
+  contents: write           # create tags + releases
+
+concurrency:
+  group: release            # serialize releases so version bumps don't collide
+  cancel-in-progress: false
 
 jobs:
   release:
-    name: Build portable zip + installer, publish release
+    name: Build + tag + release
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Determine version
+      - name: Determine version (explicit input, else auto patch-bump)
         id: ver
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $v = "${{ github.event.inputs.version }}"
-          if (-not $v) { $v = "${{ github.ref_name }}" -replace '^v','' }
-          "version=$v" >> $env:GITHUB_OUTPUT
-          Write-Host "Building version $v"
+          $ver = "${{ github.event.inputs.version }}"
+          if (-not $ver) {
+            $latest = ""
+            try { $latest = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq '.tag_name' } catch {}
+            if ($latest -match '^v?(\d+)\.(\d+)\.(\d+)') {
+              $ver = '{0}.{1}.{2}' -f $Matches[1], $Matches[2], ([int]$Matches[3] + 1)
+            } else {
+              $ver = '0.1.0'
+            }
+          }
+          "version=$ver" >> $env:GITHUB_OUTPUT
+          Write-Host "Release version: $ver"
 
       - name: Cache FFmpeg dev libs
         id: ffcache
@@ -46,6 +60,9 @@ jobs:
           cmake -S engine -B engine/build -G "Visual Studio 17 2022" -A x64 "-DVAC3_VERSION=${{ steps.ver.outputs.version }}"
           cmake --build engine/build --config Release
 
+      - name: Unit tests (ctest)
+        run: ctest --test-dir engine/build -C Release --output-on-failure
+
       - name: Assemble dist staging
         shell: pwsh
         run: |
@@ -61,7 +78,6 @@ jobs:
           Copy-Item installer/supervisor.vbs,installer/stop-engine.ps1 $d
           Copy-Item installer/quickstart.txt "$d/QUICKSTART.txt"
           Copy-Item installer/default.conf "$d/virtual-ac3-encoder.conf"
-          Get-ChildItem $d
 
       - name: Create portable zip
         shell: pwsh
@@ -89,9 +105,13 @@ jobs:
           $tag = "v$ver"
           $zip = "virtual-ac3-encoder-$ver-win64.zip"
           $exe = "installer/Output/virtual-ac3-encoder-setup-$ver.exe"
+          if (gh release view $tag 2>$null) {
+            Write-Host "Release $tag already exists; skipping."
+            exit 0
+          }
           $notes = @"
           Real-time multichannel PCM -> AC3 (Dolby Digital) -> IEC 61937 / S-PDIF (Toslink) encoder for Windows.
-          A software ``Dolby Digital Live`` / ``DTS Connect``-style tool (SoundPusher-for-Windows).
+          A software ``Dolby Digital Live`` / ``DTS Connect``-style tool (SoundPusher-for-Windows). Auto-released on merge to main.
 
           ## Downloads
           - **virtual-ac3-encoder-setup-$ver.exe** - installer (per-user, no admin); auto-starts at logon.
@@ -99,9 +119,8 @@ jobs:
 
           ## Requires
           A virtual audio cable to capture surround audio - install **VB-CABLE** (https://vb-audio.com/Cable/),
-          set ``CABLE Input`` as the default 5.1 device. And an optical output that does AC3 passthrough.
-          (Our own kernel virtual device is in ``driver/`` but needs Secure Boot off / signing; see README.)
+          set ``CABLE Input`` as the default 5.1 device. Plus an optical output that does AC3 passthrough.
 
           FFmpeg (LGPL) DLLs are bundled; see NOTICE.md for third-party attributions.
           "@
-          gh release create $tag --title "v$ver" --notes $notes $zip $exe
+          gh release create $tag --title "v$ver" --target "$env:GITHUB_SHA" --notes $notes $zip $exe

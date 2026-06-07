@@ -1,11 +1,10 @@
 name: CI
 
 on:
-  push:
-    branches: [ main ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+  # Pushes to main don't run CI here — the Release workflow builds + tests main on merge.
 
 jobs:
   engine:

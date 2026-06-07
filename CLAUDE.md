@@ -106,6 +106,16 @@ where WASAPI + a hidden console work, and needs no elevation.
   byte-exact — don't let it get EOL-converted.
 - Commit messages end with: `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
 
+## Branching & releases (required workflow)
+- **Never commit directly to `main`.** Work on a feature branch, open a PR, and **merge only when
+  CI is green**. `main` is branch-protected (the "Engine build + unit tests (Windows)" check is
+  required).
+- **Every merge to `main` auto-releases**: `release.yml` (on push to main) builds + tests, then
+  **auto patch-bumps** the version from the latest release, tags `vX.Y.Z`, builds the portable zip
+  + Inno Setup installer, and publishes a GitHub Release.
+- For a **minor/major** bump, run it manually: `gh workflow run release.yml -f version=X.Y.Z`.
+- `ci.yml` runs on PRs only (the merge gate); `release.yml` owns building main.
+
 ## TDD
 User-mode logic is unit-tested with **doctest** (`engine/test/test_*.cpp` — RingBuffer incl. an
 SPSC stress test, and the encoder contract). Add tests first for new engine logic. The kernel
