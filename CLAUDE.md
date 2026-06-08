@@ -78,8 +78,14 @@ Install our driver: `scripts\install-driver.ps1 -EnableTestSigning` (elevated) �
 `--list` (endpoints) · `--probe` (AC3 support per output) · `--mon` (capture throughput diag) ·
 `--loopback` · `--duration N` · `--in/--out` (name substr) · `--in-id/--out-id` · `--out-spdif` ·
 `--bitrate <bps>` · `--safe <frames>` · `--config <path>` · `--hidden` (hide console) ·
-`--log <path>`. Config precedence: defaults < config file (`virtual-ac3-encoder.conf` next to the
-exe; keys `in/out/in_id/out_id/bitrate/safe/loopback/out_spdif`) < CLI.
+`--log <path>` · `--upmix off|surround` (stereo->5.1 via FFmpeg `surround` filter). Config
+precedence: defaults < config file (`virtual-ac3-encoder.conf` next to the exe; keys
+`in/out/in_id/out_id/bitrate/safe/loopback/out_spdif/upmix`) < CLI.
+
+**Surround upmix:** `SpdifEncoder` runs an FFmpeg `surround` libavfilter graph (abuffer → surround →
+aformat → abuffersink) for <=2ch input when `upmix=surround`, accumulating output in an `AVAudioFifo`
+and priming with silence (FFT latency) so the realtime consumer doesn't starve. Needs the `avfilter`
+lib (linked in CMake). `log` is a VBScript reserved word — unrelated, but note prior gotchas list.
 
 ## Autostart ("set and forget")
 `scripts/setup-autostart.ps1` stages the engine to `%LOCALAPPDATA%\virtual-ac3-encoder` (+ FFmpeg &

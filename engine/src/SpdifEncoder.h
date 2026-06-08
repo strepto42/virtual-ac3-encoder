@@ -19,6 +19,10 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
+#include <libavutil/audio_fifo.h>
 #include <libavutil/channel_layout.h>
 #include <libswresample/swresample.h>
 }
@@ -31,6 +35,14 @@ public:
   SpdifEncoder(const SpdifEncoder&) = delete;
   SpdifEncoder& operator=(const SpdifEncoder&) = delete;
 
+  // Stereo->5.1 upmix mode. Only applies when the input has <= 2 channels; multichannel
+  // input is always downmixed to 5.1 (by swr) regardless.
+  enum class Upmix
+  {
+    Off,       // swr default rematrix (front channels only-ish)
+    Surround,  // FFmpeg `surround` libavfilter (FFT-based steered upmix)
+  };
+
   struct Params
   {
     int sampleRate = 48000;                       // AC3: 48000 / 44100 / 32000
@@ -38,6 +50,7 @@ public:
     AVSampleFormat inSampleFmt = AV_SAMPLE_FMT_FLT; // interleaved input from WASAPI/WAV
     AVChannelLayout inLayout{};                   // caller-owned; copied in Init().
                                                   // Any layout; downmixed to 5.1 by swr.
+    Upmix upmix = Upmix::Off;                     // stereo->5.1 upmix mode
   };
 
   // Open the encoder. Returns false (and logs to stderr) on failure.
@@ -65,14 +78,27 @@ private:
   static int WritePacketThunk(void* opaque, const uint8_t* buf, int buf_size);
   int OnWritePacket(const uint8_t* buf, int buf_size);
 
+  bool BuildFilterGraph();              // surround-upmix path
+  bool FeedFilter(const uint8_t* in);  // push one input packet, drain output into fifo_
+  int  EncodeFrameToBurst(uint8_t* outBuf, int outSize); // frame_ -> AC3 -> IEC61937
+
   AVCodecContext*  codecCtx_ = nullptr;
   AVFormatContext* muxer_    = nullptr;
   SwrContext*      swr_      = nullptr;
   AVFrame*         frame_    = nullptr;  // planar-float scratch fed to the encoder
   AVPacket*        pkt_      = nullptr;
 
+  // surround-upmix pipeline (used when upmix == Surround and input is <= 2ch)
+  bool             useFilter_ = false;
+  AVFilterGraph*   graph_     = nullptr;
+  AVFilterContext* fsrc_      = nullptr; // abuffer
+  AVFilterContext* fsink_     = nullptr; // abuffersink
+  AVAudioFifo*     fifo_      = nullptr; // accumulates filtered 5.1 fltp samples
+  AVFrame*         filtFrame_ = nullptr; // scratch for draining the sink
+
   AVChannelLayout  inLayout_{};
   AVSampleFormat   inSampleFmt_ = AV_SAMPLE_FMT_FLT;
+  int              sampleRate_ = 48000;
   int              framesPerPacket_ = 0;
   int64_t          nextPts_ = 0;
 

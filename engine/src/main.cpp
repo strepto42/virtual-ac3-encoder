@@ -80,6 +80,7 @@ static void LoadConfigFile(const std::string& path, Config& c)
     else if (k == "safe")      c.safeFrames = (uint32_t)std::strtoul(v.c_str(), nullptr, 10);
     else if (k == "loopback")  c.loopback = truthy(v);
     else if (k == "out_spdif") c.outAutoSpdif = truthy(v);
+    else if (k == "upmix")     c.upmix = v;
   }
   std::printf("Loaded config: %s\n", path.c_str());
 }
@@ -106,6 +107,7 @@ static void ParseArgs(int argc, char** argv, Config& c)
     else if (a == "--out-spdif")  c.outAutoSpdif = true;
     else if (a == "--bitrate" && i + 1 < argc) c.bitRate = std::strtoll(argv[++i], nullptr, 10);
     else if (a == "--safe" && i + 1 < argc)    c.safeFrames = (uint32_t)std::strtoul(argv[++i], nullptr, 10);
+    else if (a == "--upmix" && i + 1 < argc)   c.upmix = argv[++i];
     else std::fprintf(stderr, "ignoring unknown arg: %s\n", a.c_str());
   }
 }
@@ -278,6 +280,7 @@ int main(int argc, char** argv)
   WasapiPassthrough::Params pp;
   pp.bitRate = cfg.bitRate;
   pp.safeFrames = cfg.safeFrames;
+  pp.upmixSurround = (cfg.upmix == "surround");
 
   WasapiPassthrough out;
   if (!out.Init(outDev.Get(), &ring, cf, pp)) return 1;

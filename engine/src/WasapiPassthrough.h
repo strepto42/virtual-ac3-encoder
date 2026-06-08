@@ -26,7 +26,8 @@ public:
   struct Params
   {
     int64_t  bitRate = 640000;
-    uint32_t safeFrames = 1536; // target excess frames kept buffered (latency vs. safety)
+    uint32_t safeFrames = 1536;    // target excess frames kept buffered (latency vs. safety)
+    bool     upmixSurround = false; // stereo->5.1 via the `surround` filter (else swr default)
   };
 
   WasapiPassthrough() = default;

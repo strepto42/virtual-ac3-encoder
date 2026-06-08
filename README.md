@@ -80,9 +80,11 @@ the same engine Kodi uses internally. See `third_party/reference/` for the clone
 - `--bitrate <bps>` (default 640000) / `--safe <frames>` (drift target, default 1536)
 - `--config <path>` (defaults to `virtual-ac3-encoder.conf` next to the exe) ·
   `--hidden` (hide console) · `--log <path>` (log to file) · `--duration <s>` (auto-stop)
+- `--upmix off|surround` — for stereo input, upmix to 5.1 via FFmpeg's `surround` filter
+  (a free DTS Neo:PC / Pro Logic II-style matrix upmix). Multichannel input is downmixed regardless.
 
 Config precedence: built-in defaults < config file (`key=value`: `in`, `out`, `in_id`, `out_id`,
-`bitrate`, `safe`, `loopback`, `out_spdif`) < command-line flags.
+`bitrate`, `safe`, `loopback`, `out_spdif`, `upmix`) < command-line flags.
 
 ## Driver (Phase 3)
 

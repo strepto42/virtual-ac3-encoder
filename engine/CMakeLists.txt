@@ -22,7 +22,7 @@ endif()
 
 add_library(ffmpeg INTERFACE)
 target_include_directories(ffmpeg INTERFACE "${FFMPEG_INC}")
-foreach(_l avcodec avformat avutil swresample)
+foreach(_l avcodec avformat avfilter avutil swresample)
   find_library(FF_${_l} NAMES ${_l} PATHS "${FFMPEG_LIB}" NO_DEFAULT_PATH REQUIRED)
   target_link_libraries(ffmpeg INTERFACE "${FF_${_l}}")
 endforeach()

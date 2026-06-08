@@ -24,4 +24,8 @@ struct Config
 
   int64_t  bitRate = 640000;
   uint32_t safeFrames = 1536;
+
+  // Stereo->5.1 upmix mode for <=2ch input: "off" (swr default) or "surround"
+  // (FFmpeg `surround` FFT upmix). Multichannel input is always downmixed to 5.1.
+  std::string upmix = "off";
 };
