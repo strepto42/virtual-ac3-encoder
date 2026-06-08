@@ -100,6 +100,7 @@ add_executable(unit_tests
   test/tests_main.cpp
   test/test_ringbuffer.cpp
   test/test_encoder.cpp
+  test/test_config.cpp
 )
 target_include_directories(unit_tests PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/doctest"

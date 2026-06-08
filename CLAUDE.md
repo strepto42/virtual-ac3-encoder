@@ -78,7 +78,8 @@ Install our driver: `scripts\install-driver.ps1 -EnableTestSigning` (elevated) �
 `--list` (endpoints) · `--probe` (AC3 support per output) · `--mon` (capture throughput diag) ·
 `--loopback` · `--duration N` · `--in/--out` (name substr) · `--in-id/--out-id` · `--out-spdif` ·
 `--bitrate <bps>` · `--safe <frames>` · `--config <path>` · `--hidden` (hide console) ·
-`--log <path>` · `--upmix off|surround` (stereo->5.1 via FFmpeg `surround` filter). Config
+`--log <path>` · `--upmix surround|off` (stereo->5.1 via FFmpeg `surround` filter; **default
+surround**). Config
 precedence: defaults < config file (`virtual-ac3-encoder.conf` next to the exe; keys
 `in/out/in_id/out_id/bitrate/safe/loopback/out_spdif/upmix`) < CLI.
 
