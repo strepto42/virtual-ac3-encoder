@@ -113,33 +113,5 @@ TEST_CASE("init: AC3-invalid sample rate fails cleanly")
   CHECK_FALSE(InitFor(enc, 6, AV_SAMPLE_FMT_FLT, 96000)); // AC3 supports 48/44.1/32k only
 }
 
-TEST_CASE("upmix: stereo -> 5.1 via surround filter yields AC3 bursts")
-{
-  SpdifEncoder::Params p;
-  p.sampleRate = 48000;
-  p.inSampleFmt = AV_SAMPLE_FMT_FLT;
-  p.upmix = SpdifEncoder::Upmix::Surround;
-  av_channel_layout_default(&p.inLayout, 2);
-  SpdifEncoder enc;
-  bool ok = enc.Init(p);
-  av_channel_layout_uninit(&p.inLayout);
-  REQUIRE(ok);
-  CHECK(enc.InChannels() == 2);
-
-  const int fpp = enc.FramesPerPacket();
-  std::vector<float> in(static_cast<size_t>(fpp) * 2, 0.1f); // stereo, non-silent
-  std::vector<uint8_t> out(SpdifEncoder::kMaxBytesPerPacket);
-  int bursts = 0;
-  for (int i = 0; i < 30; ++i)
-  {
-    int n = enc.EncodePacket(reinterpret_cast<uint8_t*>(in.data()), out.data(),
-                             static_cast<int>(out.size()));
-    REQUIRE(n >= 0);
-    if (n == 6144)
-    {
-      if (bursts == 0) CHECK(HasIec61937Sync(out.data()));
-      ++bursts;
-    }
-  }
-  CHECK(bursts >= 25); // primed FIFO -> ~1 burst per call in steady state
-}
+// (The surround upmix is covered by a meaningful behavioral test in test_upmix.cpp:
+//  it decodes the AC3 output and checks that energy actually lands in the surround channels.)
