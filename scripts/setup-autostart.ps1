@@ -27,6 +27,13 @@ $ErrorActionPreference = 'Stop'
 $engineSrc = Join-Path $BuildDir 'engine.exe'
 if (-not (Test-Path $engineSrc)) { throw "engine.exe not found at $engineSrc. Build the engine first." }
 
+# 0. Stop any running instance (engine + Startup supervisor) FIRST, so we can overwrite the
+#    staged exe/DLLs on a re-run/update (otherwise the copy fails: file in use).
+Get-CimInstance Win32_Process -Filter "Name='engine.exe' OR Name='wscript.exe'" |
+  Where-Object { $_.CommandLine -like "*virtual-ac3-encoder*" -or $_.CommandLine -like "*VirtualAc3Encoder*" } |
+  ForEach-Object { $_ | Invoke-CimMethod -MethodName Terminate | Out-Null }
+Start-Sleep -Milliseconds 600
+
 # 1. Stage engine.exe + FFmpeg DLLs (and the VC runtime, so it's self-contained) into a stable dir.
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item $engineSrc $InstallDir -Force
