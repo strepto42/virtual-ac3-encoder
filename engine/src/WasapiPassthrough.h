@@ -12,6 +12,7 @@
 #include "RingBuffer.h"
 #include "SpdifEncoder.h"
 #include "WasapiCapture.h" // CaptureFormat
+#include <array>
 
 #include <audioclient.h>
 #include <mmdeviceapi.h>
@@ -25,6 +26,7 @@ class WasapiPassthrough
 public:
   struct Params
   {
+    SpdifEncoder::Codec codec = SpdifEncoder::Codec::AC3;
     int64_t  bitRate = 640000;
     uint32_t safeFrames = 1536;    // target excess frames kept buffered (latency vs. safety)
     bool     upmixSurround = false; // stereo->5.1 via the `surround` filter (else swr default)
@@ -36,6 +38,7 @@ public:
   // Non-intrusive capability check: does `dev` accept AC3 / IEC 61937 in exclusive mode at
   // `rate`? Uses IsFormatSupported only (does not seize the device).
   static bool ProbeAc3(IMMDevice* dev, int rate);
+  static bool ProbeDts(IMMDevice* dev, int rate);
 
   // dev    : optical output endpoint (must support AC3 passthrough in exclusive mode)
   // ring   : shared input ring (filled by WasapiCapture), holding capFmt frames
@@ -43,6 +46,8 @@ public:
   bool Init(IMMDevice* dev, RingBuffer* ring, const CaptureFormat& capFmt, const Params& p);
   bool Start();
   void Stop();
+  // Thread-safe live trim for the six AC3 output channels, in dB.
+  void SetChannelGainsDb(const std::array<float, 6>& gainsDb) { enc_.SetChannelGainsDb(gainsDb); }
 
 private:
   bool InitExclusive(int rate);
@@ -60,7 +65,8 @@ private:
 
   SpdifEncoder   enc_;
   int            framesPerPacket_ = 1536;
-  static constexpr int kBurstBytes = SpdifEncoder::kMaxBytesPerPacket; // 6144
+  size_t         burstBytes_ = 0;
+  static constexpr size_t kMaxBurstBytes = SpdifEncoder::kMaxBytesPerPacket; // AC3 capacity; also fits DTS
   static constexpr int kCarrierBytesPerFrame = 4; // 2ch * 16-bit IEC60958
 
   UINT32 bufferFrames_ = 0; // exclusive buffer size, in carrier frames

@@ -5,6 +5,7 @@
 #include <ks.h>
 #include <ksmedia.h>
 #include <avrt.h>
+#include <cstdio>
 
 extern "C" {
 #include <libavutil/channel_layout.h>
@@ -49,6 +50,31 @@ void FillAc3Format(WAVEFORMATEXTENSIBLE_IEC61937& w, int rate, bool extended)
   }
 }
 
+void FillDtsFormat(WAVEFORMATEXTENSIBLE_IEC61937& w, int rate, bool extended)
+{
+  ZeroMemory(&w, sizeof w);
+  WAVEFORMATEXTENSIBLE& x = w.FormatExt;
+  x.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+  x.Format.nChannels = 2;
+  x.Format.nSamplesPerSec = rate;
+  x.Format.wBitsPerSample = 16;
+  x.Format.nBlockAlign = 4;
+  x.Format.nAvgBytesPerSec = rate * 4;
+  x.Samples.wValidBitsPerSample = 16;
+  x.dwChannelMask = KSAUDIO_SPEAKER_5POINT1;
+  x.SubFormat = KSDATAFORMAT_SUBTYPE_IEC61937_DTS;
+  if (extended)
+  {
+    x.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE_IEC61937) - sizeof(WAVEFORMATEX);
+    w.dwEncodedSamplesPerSec = rate;
+    w.dwEncodedChannelCount = 6;
+    w.dwAverageBytesPerSec = 0;
+  }
+  else
+  {
+    x.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+  }
+}
 } // namespace
 
 WasapiPassthrough::~WasapiPassthrough()
@@ -71,6 +97,18 @@ bool WasapiPassthrough::ProbeAc3(IMMDevice* dev, int rate)
   return c->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &w.FormatExt.Format, nullptr) == S_OK;
 }
 
+bool WasapiPassthrough::ProbeDts(IMMDevice* dev, int rate)
+{
+  ComPtr<IAudioClient> c;
+  if (FAILED(dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &c)))
+    return false;
+  WAVEFORMATEXTENSIBLE_IEC61937 w;
+  FillDtsFormat(w, rate, true);
+  if (c->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &w.FormatExt.Format, nullptr) == S_OK)
+    return true;
+  FillDtsFormat(w, rate, false);
+  return c->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &w.FormatExt.Format, nullptr) == S_OK;
+}
 bool WasapiPassthrough::Init(IMMDevice* dev, RingBuffer* ring, const CaptureFormat& capFmt,
                              const Params& p)
 {
@@ -81,10 +119,15 @@ bool WasapiPassthrough::Init(IMMDevice* dev, RingBuffer* ring, const CaptureForm
   capBytesPerFrame_ = capFmt.bytesPerFrame();
 
   const int rate = static_cast<int>(capFmt.sampleRate);
-  if (rate != 48000 && rate != 44100 && rate != 32000)
+  if (params_.codec == SpdifEncoder::Codec::DTS && rate != 48000)
   {
-    std::fprintf(stderr, "[WasapiPassthrough] capture rate %d unsupported for AC3 "
-                         "(need 48000/44100/32000). Set the virtual device to 48 kHz.\n", rate);
+    std::fprintf(stderr, "[WasapiPassthrough] DTS mode currently requires 48000 Hz input.\n");
+    return false;
+  }
+  if (params_.codec == SpdifEncoder::Codec::AC3 &&
+      rate != 48000 && rate != 44100 && rate != 32000)
+  {
+    std::fprintf(stderr, "[WasapiPassthrough] AC3 capture rate %d unsupported; use 48000, 44100 or 32000 Hz.\n", rate);
     return false;
   }
 
@@ -98,6 +141,7 @@ bool WasapiPassthrough::Init(IMMDevice* dev, RingBuffer* ring, const CaptureForm
 
   // Configure the encoder. Input = the capture layout; downmixed to 5.1 internally.
   SpdifEncoder::Params ep;
+  ep.codec = params_.codec;
   ep.sampleRate = rate;
   ep.bitRate = params_.bitRate;
   ep.inSampleFmt = inFmt;
@@ -112,6 +156,13 @@ bool WasapiPassthrough::Init(IMMDevice* dev, RingBuffer* ring, const CaptureForm
   if (!encOk)
     return false;
   framesPerPacket_ = enc_.FramesPerPacket();
+  burstBytes_ = static_cast<size_t>(framesPerPacket_) * kCarrierBytesPerFrame;
+  if (framesPerPacket_ <= 0 || burstBytes_ == 0 || burstBytes_ > kMaxBurstBytes)
+  {
+    std::fprintf(stderr, "[WasapiPassthrough] invalid encoder frame/burst size: %d frames, %zu bytes\n",
+                 framesPerPacket_, burstBytes_);
+    return false;
+  }
 
   if (!InitExclusive(rate))
     return false;
@@ -119,7 +170,7 @@ bool WasapiPassthrough::Init(IMMDevice* dev, RingBuffer* ring, const CaptureForm
   const size_t pktBytes = static_cast<size_t>(framesPerPacket_) * capBytesPerFrame_;
   staging_.resize(pktBytes);
   silence_.assign(pktBytes, 0);
-  burst_.resize(kBurstBytes);
+  burst_.resize(kMaxBurstBytes);
   return true;
 }
 
@@ -129,24 +180,30 @@ bool WasapiPassthrough::InitExclusive(int rate)
           "Activate IAudioClient");
 
   WAVEFORMATEXTENSIBLE_IEC61937 w;
+  const bool dtsMode = params_.codec == SpdifEncoder::Codec::DTS;
+  auto fillFormat = [&](bool isExtended)
+  {
+    if (dtsMode) FillDtsFormat(w, rate, isExtended);
+    else FillAc3Format(w, rate, isExtended);
+  };
   bool extended = true;
-  FillAc3Format(w, rate, true);
+  fillFormat(true);
   HRESULT hr = client_->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &w.FormatExt.Format, nullptr);
   if (hr != S_OK)
   {
     FillAc3Format(w, rate, false);
+    if (dtsMode) FillDtsFormat(w, rate, false);
     extended = false;
     hr = client_->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &w.FormatExt.Format, nullptr);
   }
   if (hr != S_OK)
   {
-    std::fprintf(stderr, "[WasapiPassthrough] device does not support AC3 passthrough "
-                         "(IsFormatSupported = %s). Enable Dolby Digital / S-PDIF passthrough "
-                         "for this output.\n", HrStr(hr).c_str());
+    std::fprintf(stderr, "[WasapiPassthrough] device does not support %s passthrough (IsFormatSupported = %s).\n",
+                 dtsMode ? "DTS" : "AC3", HrStr(hr).c_str());
     return false;
   }
-  std::printf("[WasapiPassthrough] AC3 format accepted (%s WAVEFORMATEXTENSIBLE_IEC61937)\n",
-              extended ? "extended" : "plain");
+  std::printf("[WasapiPassthrough] %s format accepted (%s WAVEFORMATEXTENSIBLE_IEC61937)\n",
+              dtsMode ? "DTS" : "AC3", extended ? "extended" : "plain");
 
   REFERENCE_TIME defPeriod = 0;
   HR_FAIL(client_->GetDevicePeriod(&defPeriod, nullptr), "GetDevicePeriod");
@@ -234,14 +291,23 @@ void WasapiPassthrough::EncodeIntoBuffer(BYTE* out)
       in = silence_.data(); // underrun: emit AC3 silence, leave the ring to refill
     }
 
-    int n = enc_.EncodePacket(in, burst_.data(), static_cast<int>(burst_.size()));
-    if (n <= 0)
+    const size_t slotBytes = burstBytes_;
+    const int n = enc_.EncodePacket(in, burst_.data(), static_cast<int>(burst_.size()));
+    if (n <= 0 || static_cast<size_t>(n) != slotBytes)
     {
-      std::memset(burst_.data(), 0, kBurstBytes); // priming / error: stuff zeros this slot
-      n = kBurstBytes;
+      static int mismatchLogs = 0;
+      if (mismatchLogs < 10)
+      {
+        std::fprintf(stderr,
+          "[WasapiPassthrough] burst size mismatch: actual=%d expected=%llu\n",
+          n, static_cast<unsigned long long>(slotBytes));
+        ++mismatchLogs;
+      }
+      // A missing or incorrectly sized burst must not corrupt the carrier alignment.
+      std::memset(burst_.data(), 0, slotBytes);
     }
-    std::memcpy(out + outOff, burst_.data(), kBurstBytes);
-    outOff += kBurstBytes;
+    std::memcpy(out + outOff, burst_.data(), slotBytes);
+    outOff += slotBytes;
   }
 
   const size_t totalBytes = static_cast<size_t>(bufferFrames_) * kCarrierBytesPerFrame;

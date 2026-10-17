@@ -14,8 +14,12 @@
 #include "RingBuffer.h"
 #include "WasapiCapture.h"
 #include "WasapiPassthrough.h"
+#include "WasapiPcmOutput.h"
 
 #include <atomic>
+#include <array>
+#include <cmath>
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -81,8 +85,48 @@ static void LoadConfigFile(const std::string& path, Config& c)
     else if (k == "loopback")  c.loopback = truthy(v);
     else if (k == "out_spdif") c.outAutoSpdif = truthy(v);
     else if (k == "upmix")     c.upmix = v;
+    else if (k == "output_mode") c.outputMode = v;
   }
   std::printf("Loaded config: %s\n", path.c_str());
+}
+
+struct RuntimeControlState
+{
+  bool stop = false;
+  std::array<float, 6> gainsDb{{0, 0, 0, 0, 0, 0}};
+};
+
+// The GUI writes this small file atomically. Polling it at 10 Hz avoids blocking the audio thread.
+static bool LoadRuntimeControlState(const std::string& path, RuntimeControlState& state)
+{
+  std::ifstream f(path);
+  if (!f) return false;
+  const char* keys[6] = {"fl_db", "fr_db", "c_db", "lfe_db", "sl_db", "sr_db"};
+  std::string line;
+  while (std::getline(f, line))
+  {
+    const std::string s = Trim(line);
+    if (s.empty() || s[0] == '#' || s[0] == ';') continue;
+    const size_t eq = s.find('=');
+    if (eq == std::string::npos) continue;
+    const std::string key = Trim(s.substr(0, eq));
+    const std::string value = Trim(s.substr(eq + 1));
+    if (key == "stop")
+    {
+      state.stop = (value == "1" || value == "true" || value == "yes");
+      continue;
+    }
+    for (size_t i = 0; i < 6; ++i)
+    {
+      if (key != keys[i]) continue;
+      char* end = nullptr;
+      const float db = std::strtof(value.c_str(), &end);
+      if (end != value.c_str() && std::isfinite(db))
+        state.gainsDb[i] = std::clamp(db, -60.0f, 0.0f);
+      break;
+    }
+  }
+  return true;
 }
 
 static void ParseArgs(int argc, char** argv, Config& c)
@@ -238,7 +282,7 @@ int main(int argc, char** argv)
 
   if (cfg.probe)
   {
-    std::printf("AC3 passthrough support (IsFormatSupported, exclusive):\n");
+    std::printf("IEC 61937 passthrough support (IsFormatSupported, exclusive):\n");
     for (const auto& e : DeviceEnum::List(eRender))
     {
       ComPtr<IMMDevice> d;
@@ -246,8 +290,10 @@ int main(int argc, char** argv)
         continue;
       bool ok48 = WasapiPassthrough::ProbeAc3(d.Get(), 48000);
       bool ok44 = WasapiPassthrough::ProbeAc3(d.Get(), 44100);
-      std::printf("  %-48s %s  AC3@48k:%s  AC3@44.1k:%s\n", Narrow(e.name.c_str()).c_str(),
-                  e.isSpdif ? "[SPDIF]" : "       ", ok48 ? "YES" : "no ", ok44 ? "YES" : "no ");
+      bool dts48 = WasapiPassthrough::ProbeDts(d.Get(), 48000);
+      bool dts44 = WasapiPassthrough::ProbeDts(d.Get(), 44100);
+      std::printf("  %-48s %s  AC3@48k:%s  AC3@44.1k:%s  DTS@48k:%s  DTS@44.1k:%s\n", Narrow(e.name.c_str()).c_str(),
+                  e.isSpdif ? "[SPDIF]" : "       ", ok48 ? "YES" : "no ", ok44 ? "YES" : "no ", dts48 ? "YES" : "no ", dts44 ? "YES" : "no ");
     }
     return 0;
   }
@@ -277,26 +323,60 @@ int main(int argc, char** argv)
   RingBuffer ring(ringBytes);
   capture.SetRing(&ring);
 
-  WasapiPassthrough::Params pp;
-  pp.bitRate = cfg.bitRate;
-  pp.safeFrames = cfg.safeFrames;
-  pp.upmixSurround = (cfg.upmix == "surround");
-
-  WasapiPassthrough out;
-  if (!out.Init(outDev.Get(), &ring, cf, pp)) return 1;
-
-  if (!out.Start())     { std::fprintf(stderr, "passthrough start failed\n"); return 1; }
-  if (!capture.Start()) { std::fprintf(stderr, "capture start failed\n"); out.Stop(); return 1; }
+  const bool pcmMode = (cfg.outputMode == "pcm");
+  const bool dtsMode = (cfg.outputMode == "dts");
+  WasapiPassthrough ac3Out;
+  WasapiPcmOutput pcmOut;
+  if (pcmMode)
+  {
+    if (!pcmOut.Init(outDev.Get(), &ring, cf, cfg.safeFrames)) return 1;
+    if (!pcmOut.Start()) { std::fprintf(stderr, "PCM output start failed\n"); return 1; }
+  }
+  else
+  {
+    WasapiPassthrough::Params pp;
+    pp.codec = dtsMode ? SpdifEncoder::Codec::DTS : SpdifEncoder::Codec::AC3;
+    pp.bitRate = cfg.bitRate;
+    pp.safeFrames = cfg.safeFrames;
+    pp.upmixSurround = (cfg.upmix == "surround");
+    if (!ac3Out.Init(outDev.Get(), &ring, cf, pp)) return 1;
+    if (!ac3Out.Start()) { std::fprintf(stderr, "AC3 passthrough start failed\n"); return 1; }
+  }
+  if (!capture.Start())
+  {
+    std::fprintf(stderr, "capture start failed\n");
+    if (pcmMode) pcmOut.Stop(); else ac3Out.Stop();
+    return 1;
+  }
 
   if (cfg.durationSeconds > 0)
     std::printf("Running for %d s (or Ctrl+C)...\n", cfg.durationSeconds);
   else
     std::printf("Running. Press Ctrl+C to stop.\n");
 
+  const std::string controlPath = ExeDir() + "\\ac3-control.ini";
+  std::array<float, 6> lastGains{{0, 0, 0, 0, 0, 0}};
+  if (pcmMode) pcmOut.SetChannelGainsDb(lastGains);
+  else ac3Out.SetChannelGainsDb(lastGains);
   auto start = std::chrono::steady_clock::now();
   while (!g_stop.load())
   {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    RuntimeControlState control;
+    if (LoadRuntimeControlState(controlPath, control))
+    {
+      if (control.stop)
+      {
+        g_stop.store(true);
+        break;
+      }
+      if (control.gainsDb != lastGains)
+      {
+        if (pcmMode) pcmOut.SetChannelGainsDb(control.gainsDb);
+        else ac3Out.SetChannelGainsDb(control.gainsDb);
+        lastGains = control.gainsDb;
+      }
+    }
     if (cfg.durationSeconds > 0 &&
         std::chrono::steady_clock::now() - start >= std::chrono::seconds(cfg.durationSeconds))
       break;
@@ -304,6 +384,6 @@ int main(int argc, char** argv)
 
   std::printf("\nStopping...\n");
   capture.Stop();
-  out.Stop();
+  if (pcmMode) pcmOut.Stop(); else ac3Out.Stop();
   return 0;
 }

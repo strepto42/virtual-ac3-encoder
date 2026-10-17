@@ -78,7 +78,9 @@ add_executable(engine
   src/WasapiCapture.cpp
   src/WasapiCapture.h
   src/WasapiPassthrough.cpp
+  src/WasapiPcmOutput.cpp
   src/WasapiPassthrough.h
+  src/WasapiPcmOutput.h
 )
 target_link_libraries(engine PRIVATE ac3core ffmpeg ole32 avrt)
 if(MSVC)
@@ -92,6 +94,14 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/Version.h.in"
 target_include_directories(engine PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 stage_ffmpeg_dlls(engine)
 
+# ---------------------------------------------------------------------------
+# Native Windows GUI for live engine control
+# ---------------------------------------------------------------------------
+add_executable(control_center WIN32 src/ControlCenter.cpp)
+target_link_libraries(control_center PRIVATE comctl32 ole32 propsys)
+if(MSVC)
+  target_compile_options(control_center PRIVATE /W4 /permissive- /utf-8)
+endif()
 # ---------------------------------------------------------------------------
 # Unit tests (doctest) — RingBuffer + encoder contract
 # ---------------------------------------------------------------------------

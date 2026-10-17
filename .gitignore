@@ -42,3 +42,9 @@ installer/Output/
 .vs/
 *.user
 .DS_Store
+
+# Additional local build directory
+engine/build-control-center-test/
+
+# Local source backups
+*.bak-*

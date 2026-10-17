@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <cstring>
 #include <vector>
+#include <algorithm>
+#include <cmath>
 
 extern "C" {
 #include <libavutil/error.h>
@@ -22,6 +24,43 @@ void LogAv(const char* what, int err)
 
 } // namespace
 
+SpdifEncoder::SpdifEncoder()
+{
+  for (auto& gain : channelGainLinear_)
+    gain.store(1.0f, std::memory_order_relaxed);
+}
+
+void SpdifEncoder::SetChannelGainsDb(const std::array<float, 6>& gainsDb)
+{
+  for (size_t i = 0; i < channelGainLinear_.size(); ++i)
+  {
+    const float db = std::clamp(gainsDb[i], -60.0f, 0.0f);
+    const float linear = (db <= -60.0f) ? 0.0f : std::pow(10.0f, db / 20.0f);
+    channelGainLinear_[i].store(linear, std::memory_order_relaxed);
+  }
+}
+
+void SpdifEncoder::ApplyChannelGains()
+{
+  if (!frame_ || !frame_->extended_data || !codecCtx_)
+    return;
+  const int channels = std::min(6, codecCtx_->ch_layout.nb_channels);
+  for (int ch = 0; ch < channels; ++ch)
+  {
+    const float gain = channelGainLinear_[static_cast<size_t>(ch)].load(std::memory_order_relaxed);
+    if (gain >= 0.999999f)
+      continue;
+    float* samples = reinterpret_cast<float*>(frame_->extended_data[ch]);
+    if (!samples)
+      continue;
+    if (gain <= 0.0f)
+      std::fill_n(samples, frame_->nb_samples, 0.0f);
+    else
+      for (int i = 0; i < frame_->nb_samples; ++i)
+        samples[i] *= gain;
+  }
+}
+
 SpdifEncoder::~SpdifEncoder()
 {
   Close();
@@ -36,10 +75,12 @@ bool SpdifEncoder::Init(const Params& p)
   sampleRate_ = p.sampleRate;
   nextPts_ = 0;
 
-  const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_AC3);
+  useDts_ = (p.codec == Codec::DTS);
+  const AVCodecID codecId = useDts_ ? AV_CODEC_ID_DTS : AV_CODEC_ID_AC3;
+  const AVCodec* codec = avcodec_find_encoder(codecId);
   if (!codec)
   {
-    std::fprintf(stderr, "[SpdifEncoder] AC3 encoder not found in this FFmpeg build\n");
+    std::fprintf(stderr, "[SpdifEncoder] %s encoder not found in this FFmpeg build\n", useDts_ ? "DTS" : "AC3");
     return false;
   }
 
@@ -47,23 +88,25 @@ bool SpdifEncoder::Init(const Params& p)
   if (!codecCtx_)
     return false;
 
-  codecCtx_->bit_rate = p.bitRate;
+  codecCtx_->bit_rate = useDts_ ? 768000 : p.bitRate;
   codecCtx_->sample_rate = p.sampleRate;
-  codecCtx_->sample_fmt = AV_SAMPLE_FMT_FLTP; // FFmpeg's AC3 encoder takes planar float
+  codecCtx_->sample_fmt = useDts_ ? AV_SAMPLE_FMT_S32 : AV_SAMPLE_FMT_FLTP; // DTS requires packed S32
   codecCtx_->time_base = av_make_q(1, p.sampleRate);
+  if (useDts_)
+    codecCtx_->strict_std_compliance = FF_COMPLIANCE_EXPERIMENTAL;
 
   // The encoder (and S/PDIF) carry 5.1. Prefer the "back" variant to match Windows'
   // KSAUDIO_SPEAKER_5POINT1 (FL FR FC LFE BL BR); fall back to "side" 5.1 if the
   // encoder build rejects it.
   AVChannelLayout enc51back = AV_CHANNEL_LAYOUT_5POINT1_BACK;
   AVChannelLayout enc51side = AV_CHANNEL_LAYOUT_5POINT1;
-  av_channel_layout_copy(&codecCtx_->ch_layout, &enc51back);
+  av_channel_layout_copy(&codecCtx_->ch_layout, useDts_ ? &enc51side : &enc51back);
 
   int rc = avcodec_open2(codecCtx_, codec, nullptr);
   if (rc < 0)
   {
     av_channel_layout_uninit(&codecCtx_->ch_layout);
-    av_channel_layout_copy(&codecCtx_->ch_layout, &enc51side);
+    av_channel_layout_copy(&codecCtx_->ch_layout, useDts_ ? &enc51back : &enc51side);
     rc = avcodec_open2(codecCtx_, codec, nullptr);
     if (rc < 0) { LogAv("avcodec_open2", rc); return false; }
   }
@@ -80,6 +123,25 @@ bool SpdifEncoder::Init(const Params& p)
   frame_->nb_samples = framesPerPacket_;
   rc = av_frame_get_buffer(frame_, 0);
   if (rc < 0) { LogAv("av_frame_get_buffer", rc); return false; }
+  if (useDts_)
+  {
+    dtsFrame_ = av_frame_alloc();
+    if (!dtsFrame_) return false;
+    dtsFrame_->format = AV_SAMPLE_FMT_S32;
+    av_channel_layout_copy(&dtsFrame_->ch_layout, &codecCtx_->ch_layout);
+    dtsFrame_->sample_rate = sampleRate_;
+    dtsFrame_->nb_samples = framesPerPacket_;
+    rc = av_frame_get_buffer(dtsFrame_, 0);
+    if (rc < 0) { LogAv("av_frame_get_buffer(DTS)", rc); return false; }
+
+    rc = swr_alloc_set_opts2(&dtsS32Swr_,
+                             &codecCtx_->ch_layout, AV_SAMPLE_FMT_S32, sampleRate_,
+                             &codecCtx_->ch_layout, AV_SAMPLE_FMT_FLTP, sampleRate_,
+                             0, nullptr);
+    if (rc < 0 || !dtsS32Swr_) { LogAv("swr_alloc_set_opts2(DTS)", rc); return false; }
+    rc = swr_init(dtsS32Swr_);
+    if (rc < 0) { LogAv("swr_init(DTS)", rc); return false; }
+  }
 
   // Input conditioning: either the `surround` upmix filter (stereo->5.1) or plain swr
   // convert/downmix. Surround only applies to <= 2ch input; multichannel always downmixes.
@@ -146,7 +208,10 @@ void SpdifEncoder::Close()
   if (fifo_)      { av_audio_fifo_free(fifo_); fifo_ = nullptr; }
   if (filtFrame_) av_frame_free(&filtFrame_);
   useFilter_ = false;
+  useDts_ = false;
+  if (dtsS32Swr_) swr_free(&dtsS32Swr_);
   if (swr_)       swr_free(&swr_);
+  if (dtsFrame_) av_frame_free(&dtsFrame_);
   if (frame_)     av_frame_free(&frame_);
   if (pkt_)       av_packet_free(&pkt_);
   if (codecCtx_)  avcodec_free_context(&codecCtx_);
@@ -285,6 +350,9 @@ int SpdifEncoder::EncodePacket(const uint8_t* in, uint8_t* outBuf, int outSize)
     if (got < 0) { LogAv("swr_convert", got); return -1; }
   }
 
+  // The encoder frame is always planar-float 5.1 (FL, FR, C, LFE, SL/BL, SR/BR).
+  // Atomic per-channel gains let the UI adjust levels without locking the audio thread.
+  ApplyChannelGains();
   frame_->pts = nextPts_;
   nextPts_ += framesPerPacket_;
   return EncodeFrameToBurst(outBuf, outSize);
@@ -292,7 +360,33 @@ int SpdifEncoder::EncodePacket(const uint8_t* in, uint8_t* outBuf, int outSize)
 
 int SpdifEncoder::EncodeFrameToBurst(uint8_t* outBuf, int outSize)
 {
-  int rc = avcodec_send_frame(codecCtx_, frame_);
+  AVFrame* encodeFrame = frame_;
+  if (useDts_)
+  {
+    if (av_frame_make_writable(dtsFrame_) < 0)
+      return -1;
+
+    const uint8_t* inData[AV_NUM_DATA_POINTERS] = {};
+    for (int ch = 0; ch < codecCtx_->ch_layout.nb_channels; ++ch)
+      inData[ch] = frame_->extended_data[ch];
+
+    const int converted = swr_convert(dtsS32Swr_, dtsFrame_->data,
+                                       dtsFrame_->nb_samples, inData, frame_->nb_samples);
+    if (converted < 0)
+    {
+      LogAv("swr_convert(DTS)", converted);
+      return -1;
+    }
+    if (converted != framesPerPacket_)
+    {
+      std::fprintf(stderr, "[SpdifEncoder] unexpected DTS sample count: %d\n", converted);
+      return -1;
+    }
+    dtsFrame_->pts = frame_->pts;
+    encodeFrame = dtsFrame_;
+  }
+
+  int rc = avcodec_send_frame(codecCtx_, encodeFrame);
   if (rc < 0) { LogAv("avcodec_send_frame", rc); return -1; }
 
   rc = avcodec_receive_packet(codecCtx_, pkt_);

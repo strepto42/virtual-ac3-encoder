@@ -28,5 +28,7 @@ struct Config
   // Stereo->5.1 upmix mode for <=2ch input: "off" (swr default) or "surround"
   // (FFmpeg `surround` FFT upmix). Multichannel input is always downmixed to 5.1.
   // Default "surround": this tool targets a 5.1 optical path, so stereo sources use all speakers.
+  // Physical output format: "ac3" (Dolby Digital), "dts" (DTS Core), or "pcm" (stereo PCM).
+  std::string outputMode = "ac3";
   std::string upmix = "surround";
 };

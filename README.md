@@ -163,6 +163,41 @@ engine\build\Release\encode_wav.exe engine\test\test_5p1.wav engine\test\out.spd
 ffmpeg -f spdif -i engine\test\out.spdif -f null -
 ```
 
+## AC3 Control Center fork additions
+
+This fork adds a Windows Control Center and a PCM stereo output mode to the upstream Virtual AC3 Encoder project.
+
+### Audio modes
+
+- **AC3 5.1 — No upmix:** Encodes the input to Dolby Digital (AC-3) without expanding stereo input into surround channels.
+- **AC3 5.1 — Surround:** Encodes to Dolby Digital (AC-3) and enables surround upmix processing for stereo input.
+- **PCM Stereo 2.0:** Outputs two-channel PCM through WASAPI shared mode. Toslink/S/PDIF carries uncompressed PCM stereo; multichannel audio over this connection generally requires a compressed format such as AC-3 or DTS.
+
+### Channel level controls
+
+In AC-3 mode, the Control Center provides separate level trims for front left/right, center, LFE, and surround left/right channels. Trim changes apply while the encoder is running.
+
+In PCM Stereo mode, only the front-left and front-right controls are relevant.
+
+### Build on Windows
+
+Prerequisites: Visual Studio 2022 or Build Tools with the Desktop development with C++ workload, a Windows SDK, CMake, Git, and PowerShell.
+
+Run these commands from the repository root in a Visual Studio 2022 developer shell or another terminal where CMake is available:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\fetch-ffmpeg.ps1" -DestDir "$PWD\third_party\ffmpeg"
+cmake -S ".\engine" -B ".\engine\build" -G "Visual Studio 17 2022" -A x64
+cmake --build ".\engine\build" --config Release --parallel 4
+.\engine\build\Release\unit_tests.exe
+```
+
+The build output is written to `engine\build\Release`. Keep generated build output and downloaded third-party binaries out of source control.
+
+### Notes
+
+PCM Stereo uses shared-mode WASAPI output. It does not provide multichannel PCM over Toslink/S/PDIF. For Dolby Digital 5.1 over S/PDIF, select one of the AC-3 modes and use a compatible receiver.
+
 ## License
 
 **MIT** — see [`LICENSE`](LICENSE). The kernel driver is derived from Microsoft's MIT-licensed
