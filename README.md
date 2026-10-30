@@ -1,6 +1,6 @@
 # virtual-ac3-encoder
 
-[![CI](https://github.com/strepto42/virtual-ac3-encoder/actions/workflows/ci.yml/badge.svg)](https://github.com/strepto42/virtual-ac3-encoder/actions/workflows/ci.yml)
+[![CI](https://github.com/PatalJunior/virtual-ac3-encoder/actions/workflows/ci.yml/badge.svg)](https://github.com/strepto42/virtual-ac3-encoder/actions/workflows/ci.yml)
 
 A Windows 10/11 software implementation of **"Dolby Digital Live"**: a virtual 5.1 audio
 device that accepts any multichannel PCM stream, encodes it to **AC3 (Dolby Digital)** in real
