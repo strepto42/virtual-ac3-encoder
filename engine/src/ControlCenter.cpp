@@ -426,8 +426,8 @@ void SaveConfiguration(int reloadId = 0) {
     cfg["latency"] = latencies[std::clamp(g_latencyPreset, 0, 4)];
     cfg.erase("safe"); // Use preset
 
-    const char* upmixes[] = {"dynamic", "front", "always", "always_front", "off"};
-    cfg["upmix"] = upmixes[std::clamp(g_upmixMode, 0, 4)];
+    const char* upmixes[] = {"dynamic", "front", "3.0", "2.1", "always", "always_front", "off"};
+    cfg["upmix"] = upmixes[std::clamp(g_upmixMode, 0, 6)];
 
     WriteKvAtomic(g_configPath, cfg);
     WriteControlFile(false, reloadId);
@@ -479,10 +479,12 @@ void LoadConfiguration() {
     else g_latencyPreset = 2; // balanced
 
     const std::string up = cfg["upmix"];
-    if (up == "front" || up == "3.1" || up == "frontstage" || up == "center_lfe") g_upmixMode = 1;
-    else if (up == "always") g_upmixMode = 2;
-    else if (up == "always_front" || up == "always_3.1") g_upmixMode = 3;
-    else if (up == "off") g_upmixMode = 4;
+    if (up == "off") g_upmixMode = 6;
+    else if (up == "always_front" || up == "always_3.1") g_upmixMode = 5;
+    else if (up == "always") g_upmixMode = 4;
+    else if (up == "2.1" || up == "stereo_sub") g_upmixMode = 3;
+    else if (up == "3.0" || up == "front30") g_upmixMode = 2;
+    else if (up == "front" || up == "3.1" || up == "frontstage" || up == "center_lfe") g_upmixMode = 1;
     else g_upmixMode = 0; // dynamic surround (or legacy "surround")
 
     // Read control gains
@@ -521,7 +523,7 @@ void InitTrayIcon(HWND hwnd) {
     HICON hIcon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(101));
     if (!hIcon) hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512) /* IDI_APPLICATION */);
     g_notifyIconData.hIcon = hIcon;
-    wcscpy_s(g_notifyIconData.szTip, L"Virtual AC3 / DTS Control Center");
+    wcscpy_s(g_notifyIconData.szTip, L"Dolby Control Center (DTS / AC3 5.1)");
     Shell_NotifyIconW(NIM_ADD, &g_notifyIconData);
 }
 
@@ -888,7 +890,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR pCmdLine, int) {
     const int posX = std::max(0, (screenW - winWidth) / 2);
     const int posY = std::max(0, (screenH - winHeight) / 2);
 
-    g_hWnd = CreateWindowW(wc.lpszClassName, L"Virtual AC3 / DTS Control Center",
+    g_hWnd = CreateWindowW(wc.lpszClassName, L"Dolby Control Center",
                            WS_OVERLAPPEDWINDOW,
                            posX, posY, winWidth, winHeight, nullptr, nullptr, wc.hInstance, nullptr);
 
@@ -1158,8 +1160,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR pCmdLine, int) {
 
             // Stereo Upmixing
             const char* upmixes[] = {
-                "Dynamic Surround 5.1 (Auto: Center + Sub + Rears for Stereo, Discrete 5.1 Untouched)",
-                "Front Stage 3.1 (Center + Subwoofer / LFE, Rears Silent - Home Theater Recommended)",
+                "Dynamic Surround 5.1 (Auto: Center + Sub + Rears for Stereo, 5.1 Untouched)",
+                "Front Stage 3.1 (Center + Subwoofer / LFE, Rears Silent - Home Theater)",
+                "Front Stage 3.0 (Center + Front L/R, No Sub / Rears - HDMI ARC / Soundbar)",
+                "Stereo + Sub 2.1 (Front L/R + Subwoofer / LFE, Center & Rears Silent)",
                 "Always Surround 5.1 (Forced 5.1 on All Audio)",
                 "Always Front Stage 3.1 (Forced 3.1 on All Audio - Rears Silent)",
                 "Off (Pure Stereo 2.0: Front L/R Only, Center & Sub Silent)"

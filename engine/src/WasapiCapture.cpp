@@ -18,6 +18,9 @@ bool WasapiCapture::Init(IMMDevice* dev, bool loopback, REFERENCE_TIME bufferHns
 {
   loopback_ = loopback;
   bufferHns_ = (bufferHns > 0) ? bufferHns : 100000;
+  if (loopback_ && bufferHns_ < 200000)
+    bufferHns_ = 200000;
+
   HR_FAIL(dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &client_), "Activate IAudioClient");
 
   WAVEFORMATEX* mix = nullptr;
@@ -34,18 +37,9 @@ bool WasapiCapture::Init(IMMDevice* dev, bool loopback, REFERENCE_TIME bufferHns
     fmt_.isFloat = (ext->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
   }
 
-  // Shared mode. Try event-driven loopback first (supported on Windows 10/11);
-  // fall back to high-resolution polling if the driver doesn't support event-driven loopback.
-  isEventDriven_ = true;
-  DWORD flags = loopback_ ? (AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK)
-                          : AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+  isEventDriven_ = !loopback_;
+  DWORD flags = loopback_ ? AUDCLNT_STREAMFLAGS_LOOPBACK : AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
   HRESULT hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, bufferHns_, 0, mix, nullptr);
-  if (FAILED(hr) && loopback_)
-  {
-    flags = AUDCLNT_STREAMFLAGS_LOOPBACK;
-    hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, bufferHns_, 0, mix, nullptr);
-    isEventDriven_ = false;
-  }
   CoTaskMemFree(mix);
   if (FAILED(hr)) { std::fprintf(stderr, "[WasapiCapture] Initialize failed: %s\n", HrStr(hr).c_str()); return false; }
 
@@ -58,16 +52,7 @@ bool WasapiCapture::Init(IMMDevice* dev, bool loopback, REFERENCE_TIME bufferHns
     hr = client_->SetEventHandle(dataEvent_);
     if (FAILED(hr))
     {
-      if (loopback_)
-      {
-        CloseHandle(dataEvent_);
-        dataEvent_ = nullptr;
-        isEventDriven_ = false;
-      }
-      else
-      {
-        HR_FAIL(hr, "SetEventHandle");
-      }
+      HR_FAIL(hr, "SetEventHandle");
     }
   }
   HR_FAIL(client_->GetService(__uuidof(IAudioCaptureClient), &capture_), "GetService(IAudioCaptureClient)");

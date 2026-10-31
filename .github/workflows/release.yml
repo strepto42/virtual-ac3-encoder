@@ -124,16 +124,16 @@ jobs:
           $zip = "virtual-ac3-encoder-$ver-win64.zip"
           $exe = "installer/Output/virtual-ac3-encoder-setup-$ver.exe"
           $notes = @"
-          Real-time multichannel PCM -> AC3 (Dolby Digital) -> IEC 61937 / S-PDIF (Toslink) encoder for Windows.
-          A software ``Dolby Digital Live`` / ``DTS Connect``-style tool (SoundPusher-for-Windows). Auto-released on merge to main.
+          **Dolby Control Center** — Real-time multichannel & stereo PCM -> **DTS 5.1** / **Dolby Digital (AC-3) 5.1** / **PCM 2.0** -> IEC 61937 / S-PDIF (Toslink) processor for Windows.
+          A software ``Dolby Digital Live`` & ``DTS Connect`` replacement with a DirectX 11 Control Center, 6-channel VU meters, Dynamic Surround 5.1 & Front Stage 3.1 upmixing.
 
           ## Downloads
-          - **virtual-ac3-encoder-setup-$ver.exe** - installer (per-user, no admin); auto-starts at logon.
-          - **$zip** - portable build (extract and run ``engine.exe``; see ``QUICKSTART.txt``).
+          - **virtual-ac3-encoder-setup-$ver.exe** - **Dolby Control Center** installer (per-user, no admin); auto-starts minimized to tray at logon.
+          - **$zip** - portable build (extract and run ``control_center.exe`` or ``engine.exe``; see ``QUICKSTART.txt``).
 
           ## Requires
-          A virtual audio cable to capture surround audio - install **VB-CABLE** (https://vb-audio.com/Cable/),
-          set ``CABLE Input`` as the default 5.1 device. Plus an optical output that does AC3 passthrough.
+          A virtual audio cable to capture audio - install **VB-CABLE** (https://vb-audio.com/Cable/) and
+          set ``CABLE Input`` as your default playback device, plus an optical output connected to your receiver/soundbar.
 
           FFmpeg (LGPL) DLLs are bundled; see NOTICE.md for third-party attributions.
           "@

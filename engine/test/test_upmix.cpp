@@ -292,15 +292,13 @@ TEST_CASE("dynamic upmix: real 5.1 content passes through unchanged")
     CHECK(rms[c] > 0.01);
 }
 
-// Discord / VoIP 3-channel case: voice dialogue is active on Front Left, Front Right, and Center,
-// but rear surrounds (BL, BR) are silent. Dynamic upmix MUST detect that rear surrounds are silent
-// and upmix to produce energy on the rear surround channels.
-TEST_CASE("dynamic upmix: 3-channel VoIP/Discord audio gets steered to rear surrounds")
+// Dynamic upmix: native 5.1 center channel dialogue passes through without bleeding to Front L/R
+TEST_CASE("dynamic upmix: native 5.1 center channel dialogue passes through without bleeding to Front L/R")
 {
   SpdifEncoder::Params p;
   p.sampleRate = 48000;
   p.inSampleFmt = AV_SAMPLE_FMT_FLT;
-  p.upmix = SpdifEncoder::Upmix::Surround; // dynamic mode
+  p.upmix = SpdifEncoder::Upmix::Surround; // dynamic mode (input is 5.1)
   AVChannelLayout lay51 = AV_CHANNEL_LAYOUT_5POINT1_BACK;
   av_channel_layout_copy(&p.inLayout, &lay51);
   SpdifEncoder enc;
@@ -319,12 +317,12 @@ TEST_CASE("dynamic upmix: 3-channel VoIP/Discord audio gets steered to rear surr
     for (int i = 0; i < fpp; ++i)
     {
       float s = 0.3f * static_cast<float>(std::sin(2.0 * kPi * 440.0 * double(t + i) / 48000.0));
-      in[static_cast<size_t>(i) * ch + 0] = s;         // FL
-      in[static_cast<size_t>(i) * ch + 1] = -s;        // FR (anti-phase)
-      in[static_cast<size_t>(i) * ch + 2] = 0.25f * s; // Center dialogue (active!)
-      in[static_cast<size_t>(i) * ch + 3] = 0.0f;      // LFE
-      in[static_cast<size_t>(i) * ch + 4] = 0.0f;      // BL (silent on Discord)
-      in[static_cast<size_t>(i) * ch + 5] = 0.0f;      // BR (silent on Discord)
+      in[static_cast<size_t>(i) * ch + 0] = 0.0f;
+      in[static_cast<size_t>(i) * ch + 1] = 0.0f;
+      in[static_cast<size_t>(i) * ch + 2] = s;
+      in[static_cast<size_t>(i) * ch + 3] = 0.0f;
+      in[static_cast<size_t>(i) * ch + 4] = 0.0f;
+      in[static_cast<size_t>(i) * ch + 5] = 0.0f;
     }
     t += fpp;
     int n = enc.EncodePacket(reinterpret_cast<uint8_t*>(in.data()), out.data(),
@@ -336,10 +334,145 @@ TEST_CASE("dynamic upmix: 3-channel VoIP/Discord audio gets steered to rear surr
   std::vector<double> rms = DecodeSpdifAc3Rms(stream.data(), static_cast<int>(stream.size()));
   REQUIRE(rms.size() >= 6);
 
-  const double surrRms = 0.5 * (rms[4] + rms[5]);
-  MESSAGE("Discord 3-channel dynamic upmix surround-channel RMS: " << surrRms);
-  // Surrounds must receive synthesized audio rather than staying silent!
-  CHECK(surrRms > 0.03);
+  MESSAGE("native 5.1 Center dialogue RMS: FL=" << rms[0] << " FR=" << rms[1] << " FC=" << rms[2]
+          << " LFE=" << rms[3] << " BL=" << rms[4] << " BR=" << rms[5]);
+  CHECK(rms[2] > 0.10);
+  CHECK(rms[0] < 0.005);
+  CHECK(rms[1] < 0.005);
+  CHECK(0.5 * (rms[4] + rms[5]) < 0.005);
+}
+
+// 3.0 Front Stage mode: 3.0 sends to Center while keeping LFE and rear surrounds quiet
+TEST_CASE("upmix=front30: 3.0 sends to Center while keeping LFE and rear surrounds quiet")
+{
+  SpdifEncoder::Params p;
+  p.sampleRate = 48000;
+  p.inSampleFmt = AV_SAMPLE_FMT_FLT;
+  p.upmix = SpdifEncoder::Upmix::Front30;
+  AVChannelLayout lay = AV_CHANNEL_LAYOUT_STEREO;
+  av_channel_layout_copy(&p.inLayout, &lay);
+  SpdifEncoder enc;
+  bool ok = enc.Init(p);
+  av_channel_layout_uninit(&p.inLayout);
+  REQUIRE(ok);
+
+  const int fpp = enc.FramesPerPacket();
+  std::vector<float> in(static_cast<size_t>(fpp) * 2);
+  std::vector<uint8_t> out(SpdifEncoder::kMaxBytesPerPacket);
+  std::vector<uint8_t> stream;
+  long long t = 0;
+  for (int pk = 0; pk < 24; ++pk)
+  {
+    for (int i = 0; i < fpp; ++i)
+    {
+      float s = 0.3f * static_cast<float>(std::sin(2.0 * kPi * 440.0 * double(t + i) / 48000.0));
+      in[2 * i] = s;
+      in[2 * i + 1] = s;
+    }
+    t += fpp;
+    int n = enc.EncodePacket(reinterpret_cast<uint8_t*>(in.data()), out.data(),
+                             static_cast<int>(out.size()));
+    if (n > 0) stream.insert(stream.end(), out.data(), out.data() + n);
+  }
+  REQUIRE(stream.size() > static_cast<size_t>(6144) * 4);
+
+  std::vector<double> rms = DecodeSpdifAc3Rms(stream.data(), static_cast<int>(stream.size()));
+  REQUIRE(rms.size() >= 6);
+
+  MESSAGE("FrontStage 3.0 RMS: FL=" << rms[0] << " FR=" << rms[1] << " FC=" << rms[2]
+          << " LFE=" << rms[3] << " BL=" << rms[4] << " BR=" << rms[5]);
+  CHECK(rms[2] > 0.05);
+  CHECK(rms[3] < 0.005);
+  CHECK(0.5 * (rms[4] + rms[5]) < 0.005);
+}
+
+// 2.1 Stereo + Sub: sends bass to LFE while keeping Center and rear surrounds quiet
+TEST_CASE("upmix=2.1: 2.1 sends bass to LFE while keeping Center and rear surrounds quiet")
+{
+  SpdifEncoder::Params p;
+  p.sampleRate = 48000;
+  p.inSampleFmt = AV_SAMPLE_FMT_FLT;
+  p.upmix = SpdifEncoder::Upmix::StereoSub21;
+  AVChannelLayout lay = AV_CHANNEL_LAYOUT_STEREO;
+  av_channel_layout_copy(&p.inLayout, &lay);
+  SpdifEncoder enc;
+  bool ok = enc.Init(p);
+  av_channel_layout_uninit(&p.inLayout);
+  REQUIRE(ok);
+
+  const int fpp = enc.FramesPerPacket();
+  std::vector<float> in(static_cast<size_t>(fpp) * 2);
+  std::vector<uint8_t> out(SpdifEncoder::kMaxBytesPerPacket);
+  std::vector<uint8_t> stream;
+  long long t = 0;
+  for (int pk = 0; pk < 24; ++pk)
+  {
+    for (int i = 0; i < fpp; ++i)
+    {
+      float s = 0.3f * static_cast<float>(std::sin(2.0 * kPi * 80.0 * double(t + i) / 48000.0));
+      in[2 * i] = s;
+      in[2 * i + 1] = s;
+    }
+    t += fpp;
+    int n = enc.EncodePacket(reinterpret_cast<uint8_t*>(in.data()), out.data(),
+                             static_cast<int>(out.size()));
+    if (n > 0) stream.insert(stream.end(), out.data(), out.data() + n);
+  }
+  REQUIRE(stream.size() > static_cast<size_t>(6144) * 4);
+
+  std::vector<double> rms = DecodeSpdifAc3Rms(stream.data(), static_cast<int>(stream.size()));
+  REQUIRE(rms.size() >= 6);
+
+  MESSAGE("StereoSub 2.1 RMS: FL=" << rms[0] << " FR=" << rms[1] << " FC=" << rms[2]
+          << " LFE=" << rms[3] << " BL=" << rms[4] << " BR=" << rms[5]);
+  CHECK(rms[0] > 0.05);
+  CHECK(rms[1] > 0.05);
+  CHECK(rms[3] > 0.02);
+  CHECK(rms[2] < 0.005);
+  CHECK(0.5 * (rms[4] + rms[5]) < 0.005);
+}
+
+// Dynamic upmix DTS 512-frame loopback: zero packet dropouts across 64 packets
+TEST_CASE("dynamic upmix DTS 512-frame loopback: zero packet dropouts across 64 packets")
+{
+  SpdifEncoder::Params p;
+  p.codec = SpdifEncoder::Codec::DTS;
+  p.sampleRate = 48000;
+  p.inSampleFmt = AV_SAMPLE_FMT_FLT;
+  p.upmix = SpdifEncoder::Upmix::Surround;
+  AVChannelLayout lay51 = AV_CHANNEL_LAYOUT_5POINT1_BACK;
+  av_channel_layout_copy(&p.inLayout, &lay51);
+  SpdifEncoder enc;
+  bool ok = enc.Init(p);
+  av_channel_layout_uninit(&p.inLayout);
+  REQUIRE(ok);
+
+  const int fpp = enc.FramesPerPacket();
+  CHECK(fpp == 512);
+  const int ch = 6;
+  std::vector<float> in(static_cast<size_t>(fpp) * ch, 0.0f);
+  std::vector<uint8_t> out(SpdifEncoder::kMaxBytesPerPacket);
+  long long t = 0;
+  for (int pk = 0; pk < 64; ++pk)
+  {
+    for (int i = 0; i < fpp; ++i)
+    {
+      float s = 0.3f * static_cast<float>(std::sin(2.0 * kPi * 440.0 * double(t + i) / 48000.0));
+      in[static_cast<size_t>(i) * ch + 0] = s;
+      in[static_cast<size_t>(i) * ch + 1] = -s;
+      in[static_cast<size_t>(i) * ch + 2] = 0.0f;
+      in[static_cast<size_t>(i) * ch + 3] = 0.0f;
+      in[static_cast<size_t>(i) * ch + 4] = 0.0f;
+      in[static_cast<size_t>(i) * ch + 5] = 0.0f;
+    }
+    t += fpp;
+    int n = enc.EncodePacket(reinterpret_cast<uint8_t*>(in.data()), out.data(),
+                             static_cast<int>(out.size()));
+    if (pk >= 2)
+    {
+      CHECK(n == 2048);
+    }
+  }
 }
 
 // Test Upmix::Always forces upmixing on all inputs

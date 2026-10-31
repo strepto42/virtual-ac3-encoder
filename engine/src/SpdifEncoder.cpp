@@ -274,6 +274,7 @@ void SpdifEncoder::Close()
   alwaysUpmix_ = false;
   upmixMode_ = Upmix::Off;
   effectivelyStereo_ = true;
+  multichannelHoldFrames_ = 0;
   av_channel_layout_uninit(&filterInLayout_);
   stereoExtract_.clear();
   if (dtsS32Swr_) swr_free(&dtsS32Swr_);
@@ -310,12 +311,20 @@ bool SpdifEncoder::BuildFilterGraph()
   std::snprintf(srcArgs, sizeof srcArgs,
                 "sample_rate=%d:sample_fmt=%s:channel_layout=%s:time_base=1/%d",
                 sampleRate_, av_get_sample_fmt_name(inSampleFmt_), inDesc, sampleRate_);
-  char surArgs[160];
-  const bool isFrontOnly = (upmixMode_ == Upmix::FrontStage || upmixMode_ == Upmix::AlwaysFront);
-  if (isFrontOnly)
+  char surArgs[256];
+  const bool isFront31 = (upmixMode_ == Upmix::FrontStage || upmixMode_ == Upmix::AlwaysFront);
+  const bool isFront30 = (upmixMode_ == Upmix::Front30);
+  const bool isSub21 = (upmixMode_ == Upmix::StereoSub21);
+  if (isFront30)
   {
     std::snprintf(surArgs, sizeof surArgs,
-                  "chl_in=%s:chl_out=%s:sur_out=0:bc_out=0:fc_out=1.0:lfe_out=1.2:lfe_low=140",
+                  "chl_in=%s:chl_out=%s:fc_out=1.0:lfe_out=0.0:bl_out=0:br_out=0:sl_out=0:sr_out=0:bc_out=0",
+                  inDesc, outDesc);
+  }
+  else if (isFront31 || isSub21)
+  {
+    std::snprintf(surArgs, sizeof surArgs,
+                  "chl_in=%s:chl_out=%s:fc_out=1.0:lfe_out=1.2:lfe_low=140:bl_out=0:br_out=0:sl_out=0:sr_out=0:bc_out=0",
                   inDesc, outDesc);
   }
   else
@@ -352,15 +361,19 @@ bool SpdifEncoder::BuildFilterGraph()
   filtFrame_ = av_frame_alloc();
   if (!fifo_ || !filtFrame_) return false;
 
+  // Prime the FIFO past the 2048-sample FFT hop of FFmpeg's `surround` filter so
+  // both 1536-sample AC3 and 512-sample DTS packets never underrun between FFT hops.
+  const int primeTarget = std::max(2 * framesPerPacket_, 2048);
   const int inBytes =
       framesPerPacket_ * filterInLayout_.nb_channels * av_get_bytes_per_sample(inSampleFmt_);
   std::vector<uint8_t> silence(static_cast<size_t>(inBytes), 0);
-  for (int guard = 0; guard < 64 && av_audio_fifo_size(fifo_) < 2 * framesPerPacket_; ++guard)
+  for (int guard = 0; guard < 64 && av_audio_fifo_size(fifo_) < primeTarget; ++guard)
     if (!FeedFilter(silence.data()))
       break;
 
+  const char* modeName = isFront30 ? "3.0 front stage" : (isSub21 ? "2.1 stereo+sub" : (isFront31 ? "3.1 front stage (Center+Sub)" : "surround"));
   std::printf("[SpdifEncoder] %s upmix enabled%s (%s -> %s)\n",
-              isFrontOnly ? "3.1 front stage (Center+Sub)" : "surround",
+              modeName,
               dynamicUpmix_ ? " (dynamic: auto-detect stereo in multichannel)" : "",
               inDesc, outDesc);
   return true;
@@ -405,6 +418,7 @@ int SpdifEncoder::EncodePacket(const uint8_t* in, uint8_t* outBuf, int outSize)
   if (outSize < kMaxBytesPerPacket)
     return -1;
 
+  bool usedUpmixFilter = false;
   if (useFilter_)
   {
     if (!FeedFilter(in))
@@ -416,6 +430,7 @@ int SpdifEncoder::EncodePacket(const uint8_t* in, uint8_t* outBuf, int outSize)
     if (av_audio_fifo_read(fifo_, reinterpret_cast<void**>(frame_->data), framesPerPacket_) <
         framesPerPacket_)
       return 0;
+    usedUpmixFilter = true;
   }
   else if (dynamicUpmix_)
   {
@@ -423,9 +438,15 @@ int SpdifEncoder::EncodePacket(const uint8_t* in, uint8_t* outBuf, int outSize)
     if (!FeedFilter(stereoExtract_.data()))
       return -1;
 
+    // FFmpeg's `surround` filter outputs in 2048-sample FFT hops (4x a 512-sample DTS packet).
+    // Never drain below 2048 + framesPerPacket_ so 512-sample DTS packets in 5.1 loopback mode
+    // never lose audio or underrun between 2048-sample FFT hops.
+    const int maxActiveFifo = std::max(3 * framesPerPacket_, 2048 + framesPerPacket_);
+    const int minPrimedFifo = std::max(2 * framesPerPacket_, 2048);
+
     if (alwaysUpmix_ || IsEffectivelyStereo(in))
     {
-      const int excess = av_audio_fifo_size(fifo_) - 3 * framesPerPacket_;
+      const int excess = av_audio_fifo_size(fifo_) - maxActiveFifo;
       if (excess > 0)
         av_audio_fifo_drain(fifo_, excess);
       if (av_audio_fifo_size(fifo_) < framesPerPacket_)
@@ -435,10 +456,11 @@ int SpdifEncoder::EncodePacket(const uint8_t* in, uint8_t* outBuf, int outSize)
       if (av_audio_fifo_read(fifo_, reinterpret_cast<void**>(frame_->data), framesPerPacket_) <
           framesPerPacket_)
         return 0;
+      usedUpmixFilter = true;
     }
     else
     {
-      const int excess = av_audio_fifo_size(fifo_) - 2 * framesPerPacket_;
+      const int excess = av_audio_fifo_size(fifo_) - minPrimedFifo;
       if (excess > 0)
         av_audio_fifo_drain(fifo_, excess);
       if (av_frame_make_writable(frame_) < 0)
@@ -455,6 +477,48 @@ int SpdifEncoder::EncodePacket(const uint8_t* in, uint8_t* outBuf, int outSize)
     const uint8_t* inPlanes[1] = { in };
     int got = swr_convert(swr_, frame_->data, frame_->nb_samples, inPlanes, framesPerPacket_);
     if (got < 0) { LogAv("swr_convert", got); return -1; }
+  }
+
+  if (usedUpmixFilter && codecCtx_->ch_layout.nb_channels >= 6)
+  {
+    if (upmixMode_ == Upmix::FrontStage || upmixMode_ == Upmix::AlwaysFront)
+    {
+      for (int ch : { 4, 5 })
+      {
+        float* p = reinterpret_cast<float*>(frame_->extended_data[ch]);
+        if (p)
+          std::fill_n(p, frame_->nb_samples, 0.0f);
+      }
+    }
+    else if (upmixMode_ == Upmix::Front30)
+    {
+      for (int ch : { 3, 4, 5 })
+      {
+        float* p = reinterpret_cast<float*>(frame_->extended_data[ch]);
+        if (p)
+          std::fill_n(p, frame_->nb_samples, 0.0f);
+      }
+    }
+    else if (upmixMode_ == Upmix::StereoSub21)
+    {
+      float* fl = reinterpret_cast<float*>(frame_->extended_data[0]);
+      float* fr = reinterpret_cast<float*>(frame_->extended_data[1]);
+      float* fc = reinterpret_cast<float*>(frame_->extended_data[2]);
+      if (fl && fr && fc)
+      {
+        for (int i = 0; i < frame_->nb_samples; ++i)
+        {
+          fl[i] += 0.70710678f * fc[i];
+          fr[i] += 0.70710678f * fc[i];
+        }
+      }
+      for (int ch : { 2, 4, 5 })
+      {
+        float* p = reinterpret_cast<float*>(frame_->extended_data[ch]);
+        if (p)
+          std::fill_n(p, frame_->nb_samples, 0.0f);
+      }
+    }
   }
 
   // Per-channel trim applied to the 5.1 planar-float frame
@@ -530,93 +594,94 @@ bool SpdifEncoder::IsEffectivelyStereo(const uint8_t* in) const
   if (ch <= 2)
     return true;
 
-  // In 5.1 / 7.1 multichannel streams, check whether the surround channels (SL/SR: index 4 and 5)
-  // carry discrete audio energy. In true 5.1 content (games, movies), rears are active.
-  // In stereo padded to 5.1 (Spotify) or 3.0 voice chat (Discord FL+FR+Center), rears are silent.
-  // When rears are silent (< -60 dB), dynamic upmix steers the audio to all 5.1 speakers.
-  double surroundSumSq = 0.0;
-  int surroundChannels = 0;
+  // On a 5.1 / 7.1 endpoint, stereo applications (music players, browsers, Discord, stereo games)
+  // only populate Front Left (ch 0) and Front Right (ch 1); Windows leaves all discrete
+  // non-stereo channels (Center = ch 2, LFE = ch 3, Surrounds = ch 4..ch-1) at digital zero.
+  // If ANY discrete multichannel channel (Center, LFE, or Rear/Side Surrounds, c >= 2) carries
+  // signal (>= -66 dB), the source is native 5.1/7.1 and MUST pass through untouched.
+  double discreteSumSq = 0.0;
+  double frontSumSq = 0.0;
+  const int discreteChannels = ch - 2;
 
-  if (ch >= 6)
+  if (inSampleFmt_ == AV_SAMPLE_FMT_FLT)
   {
-    surroundChannels = ch - 4; // channels 4 and above are surround channels (SL, SR, BL, BR)
-    if (inSampleFmt_ == AV_SAMPLE_FMT_FLT)
+    const float* f = reinterpret_cast<const float*>(in);
+    for (int i = 0; i < framesPerPacket_; ++i)
     {
-      const float* f = reinterpret_cast<const float*>(in);
-      for (int i = 0; i < framesPerPacket_; ++i)
+      const double fl = f[i * ch + 0];
+      const double fr = f[i * ch + 1];
+      frontSumSq += fl * fl + fr * fr;
+      for (int c = 2; c < ch; ++c)
       {
-        for (int c = 4; c < ch; ++c)
-        {
-          const float v = f[i * ch + c];
-          surroundSumSq += static_cast<double>(v) * v;
-        }
-      }
-    }
-    else if (inSampleFmt_ == AV_SAMPLE_FMT_S16)
-    {
-      const int16_t* s = reinterpret_cast<const int16_t*>(in);
-      for (int i = 0; i < framesPerPacket_; ++i)
-      {
-        for (int c = 4; c < ch; ++c)
-        {
-          const double v = s[i * ch + c] / 32768.0;
-          surroundSumSq += v * v;
-        }
-      }
-    }
-    else if (inSampleFmt_ == AV_SAMPLE_FMT_S32)
-    {
-      const int32_t* s = reinterpret_cast<const int32_t*>(in);
-      for (int i = 0; i < framesPerPacket_; ++i)
-      {
-        for (int c = 4; c < ch; ++c)
-        {
-          const double v = s[i * ch + c] / 2147483648.0;
-          surroundSumSq += v * v;
-        }
+        const double v = f[i * ch + c];
+        discreteSumSq += v * v;
       }
     }
   }
-  else
+  else if (inSampleFmt_ == AV_SAMPLE_FMT_S16)
   {
-    // Less than 6 channels (e.g. 3.0 or 4.0): lacks standard 5.1 rear surrounds
-    effectivelyStereo_ = true;
-    return true;
+    const int16_t* s = reinterpret_cast<const int16_t*>(in);
+    for (int i = 0; i < framesPerPacket_; ++i)
+    {
+      const double fl = s[i * ch + 0] / 32768.0;
+      const double fr = s[i * ch + 1] / 32768.0;
+      frontSumSq += fl * fl + fr * fr;
+      for (int c = 2; c < ch; ++c)
+      {
+        const double v = s[i * ch + c] / 32768.0;
+        discreteSumSq += v * v;
+      }
+    }
+  }
+  else if (inSampleFmt_ == AV_SAMPLE_FMT_S32)
+  {
+    const int32_t* s = reinterpret_cast<const int32_t*>(in);
+    for (int i = 0; i < framesPerPacket_; ++i)
+    {
+      const double fl = s[i * ch + 0] / 2147483648.0;
+      const double fr = s[i * ch + 1] / 2147483648.0;
+      frontSumSq += fl * fl + fr * fr;
+      for (int c = 2; c < ch; ++c)
+      {
+        const double v = s[i * ch + c] / 2147483648.0;
+        discreteSumSq += v * v;
+      }
+    }
   }
 
-  const double surroundRms = std::sqrt(surroundSumSq / (framesPerPacket_ * surroundChannels));
-  if (surroundRms >= 0.001) // -60 dB threshold
+  const double discreteRms = std::sqrt(discreteSumSq / (framesPerPacket_ * discreteChannels));
+  const double frontRms = std::sqrt(frontSumSq / (framesPerPacket_ * 2));
+  constexpr double kThreshold = 0.0005; // ~ -66 dB
+
+  if (discreteRms >= kThreshold)
   {
+    // Active Center, LFE, or Surround audio detected -> native 5.1 passthrough.
+    // Hold native 5.1 mode for ~3 seconds of active front-only audio so brief front-only moments
+    // in a 5.1 movie, game, or speaker test never flip back into the stereo upmixer.
+    multichannelHoldFrames_ = sampleRate_ * 3;
     effectivelyStereo_ = false;
-    return false; // Active surround content detected (pass discrete 5.1 untouched)
+    return false;
+  }
+
+  if (multichannelHoldFrames_ > 0)
+  {
+    if (frontRms >= kThreshold)
+      multichannelHoldFrames_ = std::max(0, multichannelHoldFrames_ - framesPerPacket_);
+    if (multichannelHoldFrames_ > 0)
+    {
+      effectivelyStereo_ = false;
+      return false;
+    }
   }
 
   effectivelyStereo_ = true;
-  return true; // Surround channels are silent -> Upmix to 5.1!
+  return true; // Only FL/FR carry audio -> Upmix to 5.1/3.1!
 }
 
 void SpdifEncoder::ExtractStereo(const uint8_t* in, uint8_t* out) const
 {
   const int ch = inLayout_.nb_channels;
   const int bps = av_get_bytes_per_sample(inSampleFmt_);
-
-  // If Center channel (index 2) is present (e.g. Discord 3-channel dialogue),
-  // fold down Center at -3 dB (0.7071) into FL and FR so the upmixer can reconstruct
-  // centered dialogue and ambience without losing voice volume.
-  if (inSampleFmt_ == AV_SAMPLE_FMT_FLT && ch >= 3)
-  {
-    const float* src = reinterpret_cast<const float*>(in);
-    float* dst = reinterpret_cast<float*>(out);
-    const float kCenterFactor = 0.70710678f;
-    for (int i = 0; i < framesPerPacket_; ++i)
-    {
-      const float center = src[i * ch + 2] * kCenterFactor;
-      dst[i * 2 + 0] = src[i * ch + 0] + center;
-      dst[i * 2 + 1] = src[i * ch + 1] + center;
-    }
-    return;
-  }
-
   const int inStride = ch * bps;
   const int outStride = 2 * bps;
   for (int i = 0; i < framesPerPacket_; ++i)

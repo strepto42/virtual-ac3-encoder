@@ -420,6 +420,10 @@ int main(int argc, char** argv)
           pp.upmix = SpdifEncoder::Upmix::AlwaysFront;
         else if (c.upmix == "front" || c.upmix == "3.1" || c.upmix == "frontstage" || c.upmix == "center_lfe")
           pp.upmix = SpdifEncoder::Upmix::FrontStage;
+        else if (c.upmix == "3.0" || c.upmix == "front30")
+          pp.upmix = SpdifEncoder::Upmix::Front30;
+        else if (c.upmix == "2.1" || c.upmix == "stereo_sub")
+          pp.upmix = SpdifEncoder::Upmix::StereoSub21;
         else if (c.upmix == "surround" || c.upmix == "dynamic")
           pp.upmix = SpdifEncoder::Upmix::Surround;
         else

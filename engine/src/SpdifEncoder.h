@@ -43,15 +43,19 @@ public:
   // - Off: swr default rematrix (front channels only)
   // - Surround: auto-detects non-surround sources and upmixes to all 5.1 speakers (Center + Sub + Rears)
   // - FrontStage: auto-detects non-surround sources and upmixes to 3.1 (Center + Sub/LFE), keeping rears silent
+  // - Front30: auto-detects non-surround sources and upmixes to 3.0 (Center + Front L/R, no Sub/Rears)
+  // - StereoSub21: auto-detects non-surround sources and upmixes to 2.1 (Front L/R + Sub/LFE, Center & rears silent)
   // - Always: forces 5.1 surround upmixing unconditionally on all inputs
   // - AlwaysFront: forces 3.1 upmixing (Center + Sub/LFE) unconditionally on all inputs
   enum class Upmix
   {
     Off,
-    Surround,
-    FrontStage,
-    Always,
-    AlwaysFront,
+    Surround,     // Dynamic 5.1 (FL+FR+FC+LFE+SL+SR)
+    FrontStage,   // Dynamic 3.1 (FL+FR+FC+LFE, rears silent)
+    Front30,      // Dynamic 3.0 (FL+FR+FC, LFE & rears silent)
+    StereoSub21,  // Dynamic 2.1 (FL+FR+LFE, Center & rears silent)
+    Always,       // Forced 5.1 on all audio
+    AlwaysFront,  // Forced 3.1 on all audio
   };
 
   struct Params
@@ -133,6 +137,7 @@ private:
   bool             alwaysUpmix_ = false;
   Upmix            upmixMode_ = Upmix::Off;
   mutable bool     effectivelyStereo_ = true;
+  mutable int      multichannelHoldFrames_ = 0; // hysteresis hold for native 5.1 streams
   AVChannelLayout  filterInLayout_{}; // layout fed to the filter graph (stereo in dynamic mode)
   std::vector<uint8_t> stereoExtract_; // buffer for extracted FL+FR frames
 

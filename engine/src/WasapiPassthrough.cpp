@@ -317,8 +317,9 @@ bool WasapiPassthrough::EncodeIntoBuffer(BYTE* out)
     }
     else
     {
-      // If the buffer underruns, reset primed state so we re-cushion before resuming.
-      primed_ = false;
+      // If the buffer underruns, reset primed state only if the ring buffer is completely starved.
+      if (ring_->BytesAvailable() == 0)
+        primed_ = false;
       in = silence_.data(); // underrun: emit AC3/DTS silence, leave the ring to refill
     }
 
@@ -456,7 +457,7 @@ void WasapiPassthrough::ThreadProc()
       {
         // Only trim if the MINIMUM available buffer over the entire window has exceeded desired + hysteresis.
         // This deadband ensures that normal OS thread scheduling jitter (+-3-5 ms) never causes an underrun.
-        const uint32_t hysteresis = framesPerPacket_;
+        const uint32_t hysteresis = std::max<uint32_t>(static_cast<uint32_t>(framesPerPacket_) * 2, 1024u);
         if (minAvail_ != 0xFFFFFFFFu && minAvail_ > desired + hysteresis)
         {
           const uint32_t excess = minAvail_ - (desired + hysteresis / 2);

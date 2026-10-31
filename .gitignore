@@ -50,3 +50,5 @@ engine/build-control-center-test/
 
 # Local source backups
 *.bak-*
+
+engine/build-local/
