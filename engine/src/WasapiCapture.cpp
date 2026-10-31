@@ -14,9 +14,13 @@ WasapiCapture::~WasapiCapture()
   if (stopEvent_) CloseHandle(stopEvent_);
 }
 
-bool WasapiCapture::Init(IMMDevice* dev, bool loopback)
+bool WasapiCapture::Init(IMMDevice* dev, bool loopback, REFERENCE_TIME bufferHns)
 {
   loopback_ = loopback;
+  bufferHns_ = (bufferHns > 0) ? bufferHns : 100000;
+  if (loopback_ && bufferHns_ < 200000)
+    bufferHns_ = 200000;
+
   HR_FAIL(dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &client_), "Activate IAudioClient");
 
   WAVEFORMATEX* mix = nullptr;
@@ -33,26 +37,29 @@ bool WasapiCapture::Init(IMMDevice* dev, bool loopback)
     fmt_.isFloat = (ext->SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
   }
 
-  // Shared mode. Loopback streams cannot be event-driven, so they are polled instead.
-  // periodicity must be 0 in shared mode.
-  const DWORD flags = loopback_ ? AUDCLNT_STREAMFLAGS_LOOPBACK : AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
-  REFERENCE_TIME bufferHns = 200000; // 20 ms; WASAPI may enlarge as needed
-  HRESULT hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, bufferHns, 0, mix, nullptr);
+  isEventDriven_ = !loopback_;
+  DWORD flags = loopback_ ? AUDCLNT_STREAMFLAGS_LOOPBACK : AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+  HRESULT hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, bufferHns_, 0, mix, nullptr);
   CoTaskMemFree(mix);
   if (FAILED(hr)) { std::fprintf(stderr, "[WasapiCapture] Initialize failed: %s\n", HrStr(hr).c_str()); return false; }
 
   stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr); // manual-reset
   if (!stopEvent_) return false;
-  if (!loopback_)
+  if (isEventDriven_)
   {
     dataEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!dataEvent_) return false;
-    HR_FAIL(client_->SetEventHandle(dataEvent_), "SetEventHandle");
+    hr = client_->SetEventHandle(dataEvent_);
+    if (FAILED(hr))
+    {
+      HR_FAIL(hr, "SetEventHandle");
+    }
   }
   HR_FAIL(client_->GetService(__uuidof(IAudioCaptureClient), &capture_), "GetService(IAudioCaptureClient)");
 
-  std::printf("[WasapiCapture] %s: %u ch, %u Hz, %u-bit %s, mask=0x%X\n",
-              loopback_ ? "loopback" : "capture", fmt_.channels, fmt_.sampleRate, fmt_.bits,
+  std::printf("[WasapiCapture] %s (%s): %u ch, %u Hz, %u-bit %s, mask=0x%X\n",
+              loopback_ ? "loopback" : "capture", isEventDriven_ ? "event-driven" : "polled",
+              fmt_.channels, fmt_.sampleRate, fmt_.bits,
               fmt_.isFloat ? "float" : "int", fmt_.channelMask);
   return true;
 }
@@ -78,7 +85,13 @@ void WasapiCapture::Stop()
     return;
   if (stopEvent_) SetEvent(stopEvent_);
   if (thread_.joinable()) thread_.join();
-  if (client_) client_->Stop();
+  if (client_) {
+    client_->Stop();
+    client_.Reset();
+  }
+  capture_.Reset();
+  if (dataEvent_) { CloseHandle(dataEvent_); dataEvent_ = nullptr; }
+  if (stopEvent_) { CloseHandle(stopEvent_); stopEvent_ = nullptr; }
 }
 
 void WasapiCapture::ThreadProc()
@@ -114,23 +127,24 @@ void WasapiCapture::ThreadProc()
     }
   };
 
-  if (loopback_)
+  if (isEventDriven_ && dataEvent_)
   {
-    // Loopback streams aren't event-driven: poll, waking early if asked to stop.
+    // 5 ms timeout ensures erratic Windows loopback events or quiet pauses never stall the drain loop
+    HANDLE waits[2] = { dataEvent_, stopEvent_ };
     while (running_.load(std::memory_order_relaxed))
     {
-      if (WaitForSingleObject(stopEvent_, 5) == WAIT_OBJECT_0) // ~5 ms poll
+      DWORD w = WaitForMultipleObjects(2, waits, FALSE, 5);
+      if (w == WAIT_OBJECT_0 + 1) // stop
         break;
       drain();
     }
   }
   else
   {
-    HANDLE waits[2] = { dataEvent_, stopEvent_ };
+    // Polled loopback fallback with 1 ms high-resolution timer
     while (running_.load(std::memory_order_relaxed))
     {
-      DWORD w = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
-      if (w == WAIT_OBJECT_0 + 1) // stop
+      if (WaitForSingleObject(stopEvent_, 1) == WAIT_OBJECT_0)
         break;
       drain();
     }

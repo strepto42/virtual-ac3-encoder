@@ -1,171 +1,206 @@
-# virtual-ac3-encoder
+# Dolby Control Center (`virtual-ac3-encoder`)
 
-[![CI](https://github.com/strepto42/virtual-ac3-encoder/actions/workflows/ci.yml/badge.svg)](https://github.com/strepto42/virtual-ac3-encoder/actions/workflows/ci.yml)
+[![CI](https://github.com/PatalJunior/virtual-ac3-encoder/actions/workflows/ci.yml/badge.svg)](https://github.com/PatalJunior/virtual-ac3-encoder/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A Windows 10/11 software implementation of **"Dolby Digital Live"**: a virtual 5.1 audio
-device that accepts any multichannel PCM stream, encodes it to **AC3 (Dolby Digital)** in real
-time, and streams it as an **IEC 61937 / S-PDIF** bitstream out a chosen **Toslink optical**
-output to an AV receiver.
+A real-time Windows 10/11 software implementation of **Dolby Digital Live (DDL)** and **DTS Connect** — a virtual surround audio processor and **DirectX 11 Control Center** that captures stereo or 5.1 PCM audio, encodes it in real time to **DTS 5.1**, **Dolby Digital (AC-3) 5.1**, or **PCM Stereo 2.0**, wraps it as an **IEC 61937 / S-PDIF** bitstream, and streams it over a single **Toslink optical** cable to your AV receiver or soundbar.
 
-> **Also known as / what problem this solves:** a free, open-source software **Dolby Digital Live
-> (DDL)** and **DTS Connect** alternative for Windows — for PCs whose sound card can't encode
-> surround to optical, so you can get true **5.1 surround over a single Toslink / S-PDIF (optical)
-> cable** to an AV receiver or soundbar. Essentially **SoundPusher for Windows**. Useful when
-> "Dolby Digital Live" / "DTS Interactive" / "DTS Connect" isn't available on your motherboard or
-> USB sound card (Realtek, ASUS Xonar, etc.).
->
-> _Currently encodes **AC3 (Dolby Digital, 5.1, 640 kbps)**. DTS Connect-style **DTS** output is a
-> feasible extension — FFmpeg ships a DTS encoder; see the design notes in `CLAUDE.md`._
+> **Why this exists:** Optical (S/PDIF / Toslink) only has enough bandwidth for uncompressed **2.0 stereo PCM** *or* a compressed **5.1 bitstream** (Dolby Digital / DTS) — never uncompressed 5.1 PCM. Most modern motherboards and USB DACs (Realtek, etc.) omit Dolby Digital Live and DTS Interactive licensing, leaving PC games, movies, and music stuck in 2.0 stereo over optical. This project performs the real-time 5.1 encoding and stereo-to-surround upmixing in software with ultra-low latency.
 
-**Keywords:** Dolby Digital Live, DTS Connect, DTS Interactive, software AC3 encoder, real-time
-AC3/AC-3 encoder, 5.1 surround over optical/SPDIF/Toslink, IEC 61937 passthrough, WASAPI exclusive
-passthrough, virtual audio device/cable, FFmpeg AC3, SoundPusher for Windows, HTPC surround sound.
+---
 
-## Download / install
+## Key Features
 
-Get the latest **[Release](https://github.com/strepto42/virtual-ac3-encoder/releases/latest)**:
-- **`virtual-ac3-encoder-setup-x.y.z.exe`** — per-user installer (no admin); auto-starts hidden at
-  logon, with Start-Menu shortcuts for config / log / device list.
-- **`virtual-ac3-encoder-x.y.z-win64.zip`** — portable build; extract and run `engine.exe`
-  (see `QUICKSTART.txt`).
+| Feature | Details |
+| :--- | :--- |
+| **Multi-Format Digital Output** | **DTS Core 5.1** (`1536 kbps` full-rate / `768 kbps` half-rate), **Dolby Digital AC-3 5.1** (`640 kbps` / `448 kbps`), and **PCM Stereo 2.0** over **Toslink Optical (S/PDIF)** or **HDMI ARC**. |
+| **Smart Multi-Layout Upmixing (`5.1` / `3.1` / `3.0` / `2.1`)** | **Dynamic Surround 5.1** (auto-detects stereo inside 5.1 streams and upmixes to all 6 speakers while passing true discrete 5.1 untouched), **Front Stage 3.1** (`FL+FR+C+LFE`), **Front Stage 3.0** (`FL+FR+C`, ideal for 3.0 HDMI ARC soundbars), **Stereo + Sub 2.1** (`FL+FR+LFE`), **Always 5.1 / 3.1**, or **Off**. |
+| **Dolby Control Center (DX11 GUI)** | Hardware-accelerated **Dear ImGui + DirectX 11** dark studio UI with **60 FPS 6-channel VU meters** (peak hold + dB readouts), per-speaker level trims (`-60 dB` to `0 dB` + mute), live hot-reload (zero audio interruption when changing modes/trims), and system tray integration. |
+| **5-Tier Latency Presets** | **Extreme** (`~3 ms`), **Fast** (`~7 ms`), **Balanced** (`~12 ms`, default), **Safe** (`~20 ms`), and **Relaxed** (`~35 ms`), backed by a lock-free SPSC ring buffer and master-clock drift compensation. |
+| **Flexible Audio Capture** | Works out-of-the-box with **Secure Boot ON** via **[VB-CABLE](https://vb-audio.com/Cable/)** (WASAPI loopback or recording capture), or with the included **WDK WaveRT Virtual 5.1 Driver** (`driver/`). |
 
-You also need a virtual audio cable to capture surround audio — install
-**[VB-CABLE](https://vb-audio.com/Cable/)** and set *CABLE Input* as your default 5.1 device — then
-connect the optical output to your receiver. Prefer to build from source? See **Build** below.
+---
 
-Optical (S-PDIF) can carry stereo PCM *or* a compressed 5.1 bitstream, never 5.1 PCM — so a
-surround stream has to be encoded to AC3 on the PC before it leaves the optical port. Many
-onboard sound chips don't offer this; this project does it in software.
+## System Architecture & Audio Flowcharts
 
-## Architecture
+### 1. End-to-End Real-Time Pipeline
 
-Two components (the encoder is FFmpeg and **cannot** live in a kernel driver, so the work is
-split):
+```mermaid
+flowchart LR
+    subgraph Sources["Windows Audio Sources"]
+        App["Games / Movies / Music\n(Stereo 2.0 or Discrete 5.1 PCM)"]
+        Cable["Virtual Endpoint\n(VB-CABLE Input or WaveRT 5.1 Driver)"]
+        App --> Cable
+    end
 
-1. **Kernel virtual audio driver** (`driver/`) — a PortCls/WaveRT virtual cable (SYSVAD-derived)
-   that publishes a 5.1 render endpoint plus a paired loopback-capture endpoint. *Phase 3.*
-2. **User-mode engine** (`engine/`) — captures the 5.1 PCM, encodes AC3, wraps it as IEC 61937,
-   and renders it to the optical endpoint via WASAPI exclusive passthrough.
+    subgraph Engine["Real-Time Engine (engine.exe)"]
+        Cap["WasapiCapture\n(Loopback or Event Capture)"]
+        Ring["Lock-Free SPSC RingBuffer\n(Pre-Roll Cushion + Drift Trim)"]
+        DSP["SpdifEncoder DSP\n(5.1 / 3.1 Upmix + Channel Trims)"]
+        Enc{"Output Mode"}
+        AC3["FFmpeg AC-3 Encoder\n1536 frames -> 6144B IEC 61937"]
+        DTS["FFmpeg DCA (DTS) Encoder\n512 frames -> 2048B IEC 61937"]
+        PCM["WASAPI Shared Render\nStereo 2.0 PCM"]
+        Pass["WasapiPassthrough\n(EXCLUSIVE Event Master Clock)"]
 
-The engine's real-time design (output clock = master, lock-free ring buffer between capture and
-output, drift correction by periodic latency-trim) is modeled on
-[SoundPusher](https://codeberg.org/q-p/SoundPusher) (MIT), the equivalent macOS tool. The AC3
-encode + S-PDIF mux uses **FFmpeg** (`libavcodec` AC3 encoder + `spdif` muxer + `libswresample`),
-the same engine Kodi uses internally. See `third_party/reference/` for the cloned references.
+        Cap --> Ring --> DSP --> Enc
+        Enc -->|Dolby Digital 5.1| AC3 --> Pass
+        Enc -->|DTS 5.1| DTS --> Pass
+        Enc -->|PCM 2.0| PCM
+    end
 
-## Status
+    subgraph GUI["Dolby Control Center (control_center.exe)"]
+        Shm["Shared Memory Telemetry\n(6-Ch Peak & RMS Levels)"]
+        Ini["Live Hot-Reload IPC\n(virtual-ac3-encoder.conf + ac3-control.ini)"]
+    end
 
-- [x] **Phase 1 — offline encoder core.** `SpdifEncoder` (PCM → AC3 640 kbps 5.1 → IEC 61937)
-      + lock-free `RingBuffer` + WAV test harness. Verified: output decodes as
-      `ac3, 48000 Hz, 5.1, 640 kb/s`.
-- [x] **Phase 2 — live WASAPI engine.** Shared capture/loopback → ring buffer → exclusive
-      IEC 61937 passthrough (output = master clock; SoundPusher-style 64-cycle drift-trim).
-- [x] **TDD harness.** doctest `unit_tests` (RingBuffer incl. SPSC stress + encoder contract).
-- [x] **Phase 3 — kernel virtual audio driver, built & test-signed.** 5.1 render-only virtual
-      endpoint ("Virtual AC3 Encoder (5.1)"). Loads only with Secure Boot OFF (see Install).
-- [x] **Working end-to-end (confirmed).** Because Secure Boot is ON here, the live system uses
-      **VB-CABLE** as the 5.1 source: `engine --in "CABLE Output" --out "Realtek Digital Output"`
-      → receiver decodes **Dolby Digital**. (Our own driver is ready for when Secure Boot is off.)
-- [ ] **Phase 4 — packaging** (config file + auto-start at logon; optional tray UI).
+    Hw["Optical S/PDIF (Toslink)\n-> AV Receiver / Soundbar"]
 
-## Components / engine flags
-
-`engine.exe`:
-- `--list` — list render + capture endpoints.
-- `--probe` — which outputs accept AC3 passthrough (IsFormatSupported, non-intrusive).
-- `--mon` — capture-only throughput diagnostic (non-intrusive).
-- `--loopback` — treat `--in` as a *render* endpoint and capture it via WASAPI loopback
-  (used with the virtual driver).
-- `--in <name>` / `--in-id <id>` / `--out <name>` / `--out-id <id>` / `--out-spdif`
-- `--bitrate <bps>` (default 640000) / `--safe <frames>` (drift target, default 1536)
-- `--config <path>` (defaults to `virtual-ac3-encoder.conf` next to the exe) ·
-  `--hidden` (hide console) · `--log <path>` (log to file) · `--duration <s>` (auto-stop)
-- `--upmix surround|off` — for stereo input, upmix to 5.1 via FFmpeg's `surround` filter
-  (a free DTS Neo:PC / Pro Logic II-style matrix upmix). **Default `surround`**; use `off` for
-  untouched stereo→front. Multichannel input is downmixed regardless.
-
-Config precedence: built-in defaults < config file (`key=value`: `in`, `out`, `in_id`, `out_id`,
-`bitrate`, `safe`, `loopback`, `out_spdif`, `upmix`) < command-line flags.
-
-## Driver (Phase 3)
-
-Derived from Microsoft's SimpleAudioSample (`third_party/reference/wds`), trimmed to a single
-5.1 render endpoint and rebranded. Build (WDK 10.0.26100 + VS2022):
-
-```powershell
-& "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\amd64\MSBuild.exe" `
-  driver\SimpleAudioSample.sln /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false
-# output: driver\x64\Release\package\  (SimpleAudioSample.sys / .inf / .cat)
+    Cable --> Cap
+    DSP -.->|60 FPS Lock-Free Atomics| Shm
+    Ini -.->|Seamless Live Re-Init| Engine
+    Pass --> Hw
+    PCM --> Hw
 ```
 
-### Install (requires Secure Boot OFF for a test-signed driver)
+### 2. Dynamic Stereo & Surround Upmix Decision Flow
 
-```powershell
-# 1. Disable Secure Boot in your UEFI/BIOS (manual).
-# 2. Elevated PowerShell:
-scripts\install-driver.ps1 -EnableTestSigning   # enables test signing + trusts the test cert
-# 3. Reboot.
-scripts\install-driver.ps1                        # creates the ROOT\SimpleAudioSample device
-# Uninstall: scripts\uninstall-driver.ps1 [-DisableTestSigning]
+```mermaid
+flowchart TD
+    In["Incoming PCM Frame\n(2.0 Stereo or 5.1 Multichannel)"] --> Mode{"Selected Upmix Mode"}
+
+    Mode -->|Off| SwrPass["libswresample Rematrix\n(Direct Pass-Through)"]
+    Mode -->|Always 5.1| Filt51["FFmpeg surround Filter Graph\n(Full 5.1: FL, FR, C, LFE, SL, SR)"]
+    Mode -->|Always Front Stage 3.1| Filt31["FFmpeg surround Filter Graph\n(3.1 Stage: FL, FR, C, LFE | SL/SR Muted)"]
+
+    Mode -->|Dynamic 5.1 / 3.1 / 3.0 / 2.1| Detect{"Discrete Energy on\nC / LFE / SL / SR > -66 dB?\n(3s Multichannel Hold)"}
+
+    Detect -->|Yes: True Discrete 5.1\ne.g. Netflix / 5.1 Game| SwrPass
+    Detect -->|No: Stereo-in-5.1\ne.g. YouTube / Music / VoIP| Extract["Extract FL + FR Pair"]
+
+    Extract --> StageChoice{"Speaker Layout Target"}
+    StageChoice -->|Dynamic 5.1| Filt51
+    StageChoice -->|Front Stage 3.1| Filt31
+    StageChoice -->|Front Stage 3.0| Filt30["3.0 Stage: FL, FR, C\n(LFE & SL/SR Muted - HDMI ARC / Soundbar)"]
+    StageChoice -->|Stereo + Sub 2.1| Filt21["2.1 Stage: FL, FR + LFE Bass\n(Center Folded to L/R, C & SL/SR Muted)"]
+
+    SwrPass --> Gains["Per-Speaker Gain Trims (-60..0 dB)\n& 6-Channel Peak/RMS Metering"]
+    Filt51 --> Gains
+    Filt31 --> Gains
+    Filt30 --> Gains
+    Filt21 --> Gains
 ```
 
-## Running it
+---
+
+## Quick Start (Download & Install)
+
+### 1. Install VB-CABLE (Virtual Audio Device)
+1. Download and install **[VB-CABLE](https://vb-audio.com/Cable/)**.
+2. Open **Windows Sound Settings (`mmsys.cpl`)**:
+   - Set **CABLE Input (VB-Audio Virtual Cable)** as your **Default Playback Device**.
+   - *(Optional)* Select **CABLE Input** -> **Configure** -> **5.1 Surround** (or leave as Stereo and let **Dynamic Surround 5.1** / **Front Stage 3.1** upmix automatically).
+3. Connect your PC's **Optical (S/PDIF / Toslink)** port to your AV receiver or soundbar.
+
+### 2. Install Dolby Control Center
+Download the latest release from **[Releases](https://github.com/PatalJunior/virtual-ac3-encoder/releases/latest)**:
+- **`virtual-ac3-encoder-setup-x.y.z.exe`** *(Recommended)* — Per-user installer (no admin required). Installs **Dolby Control Center**, sets up automatic system-tray startup at Windows logon, and adds Start Menu shortcuts.
+- **`virtual-ac3-encoder-x.y.z-win64.zip`** — Portable zip; extract anywhere and run `control_center.exe` (or `engine.exe` from CLI).
+
+---
+
+## Dolby Control Center Guide
+
+### Output Modes
+- **DTS 5.1 Surround (`1536 kbps` / `768 kbps`)**: Highest-bitrate optical surround (`512`-sample frames for ultra-low latency).
+- **Dolby Digital 5.1 (`640 kbps` / `448 kbps`)**: Universal AC-3 optical bitstream supported by virtually all AV receivers and soundbars.
+- **PCM Stereo 2.0**: Uncompressed stereo pass-through over WASAPI shared mode.
+
+### Stereo Upmix & Speaker Layout Modes
+- **Dynamic Surround 5.1 (Default)**: Automatically detects whether the audio playing is stereo (music, YouTube, stereo games, Discord) or discrete 5.1 (movies, surround games). Stereo sources are upmixed across all 5.1 speakers; true 5.1 sources (including Center-only dialogue) pass through untouched with a 3-second hold window.
+- **Front Stage 3.1 (Home Theater Recommended)**: Dynamically steers vocals to the **Center** speaker and deep bass to the **Subwoofer (LFE)** while keeping rear surrounds completely silent.
+- **Front Stage 3.0 (HDMI ARC / Soundbar)**: Dynamically steers vocals to the **Center** speaker alongside **Front Left & Right** while keeping both Subwoofer (LFE) and rear surrounds silent — ideal for 3.0 soundbars and LCR setups without a dedicated subwoofer.
+- **Stereo + Sub 2.1 (Bookshelf + Subwoofer)**: Extracts low-frequency bass (`< 140 Hz`) to the **Subwoofer (LFE)** while folding centered vocals back into **Front Left & Right** and keeping Center and rear surrounds silent.
+- **Always Surround 5.1 / Always Front Stage 3.1**: Forces upmixing unconditionally on all inputs.
+- **Off**: Pure 1:1 channel mapping with no upmix filter.
+
+### Speaker Level Trims & Master Release
+- **6-Speaker Trims (`FL`, `FR`, `C`, `LFE`, `SL`, `SR`)**: Adjust any speaker from `-60 dB` to `0 dB` or toggle **Mute** in real time while audio is playing.
+- **Master Power Button**: Click `[ ACTIVE: ENCODING TO S/PDIF ]` at the top of the window (or via the system tray icon) to immediately stop encoding and release exclusive ownership of the optical port.
+
+---
+
+## CLI Reference (`engine.exe`)
+
+While `control_center.exe` manages `engine.exe` automatically, you can also run `engine.exe` standalone:
 
 ```powershell
-# With the virtual driver installed (render-only + loopback):
-engine\build\Release\engine.exe --loopback --in "Virtual AC3 Encoder" --out "Realtek Digital Output"
+# List all playback and recording endpoints
+engine.exe --list
 
-# Or, without the driver, using an existing virtual cable (works with Secure Boot ON):
-engine\build\Release\engine.exe --in "CABLE Output" --out "Realtek Digital Output"
+# Probe which playback endpoints support AC-3 passthrough
+engine.exe --probe
+
+# Capture "CABLE Input" via WASAPI loopback and output AC-3 5.1 to Realtek Digital Output
+engine.exe --loopback --in "CABLE Input" --out "Realtek Digital Output"
+
+# Capture "CABLE Output" recording endpoint directly
+engine.exe --in "CABLE Output" --out-spdif --bitrate 640000 --upmix surround
 ```
 
-Set the virtual device as the Windows default 5.1 output, play surround content, and switch the
-receiver to the matching optical input — it should report Dolby Digital.
+| Flag | Description |
+| :--- | :--- |
+| `--list` | List all active Windows render and capture endpoints. |
+| `--probe` | Query `IAudioClient::IsFormatSupported` for IEC 61937 AC-3 support on all render endpoints. |
+| `--mon` | Run a 5-second capture-only throughput diagnostic. |
+| `--loopback` | Capture `--in` as a *render* endpoint via WASAPI loopback (default for `CABLE Input` / virtual driver). |
+| `--in <name>` / `--in-id <id>` | Capture device friendly-name substring or exact endpoint ID. |
+| `--out <name>` / `--out-id <id>` | Optical output device friendly-name substring or exact endpoint ID. |
+| `--out-spdif` | Automatically pick the first render endpoint with an `SPDIF` form factor. |
+| `--bitrate <bps>` | AC-3 bitrate (`640000` or `448000`). |
+| `--safe <frames>` | Target ring-buffer drift floor in sample frames. |
+| `--upmix <mode>` | `surround` (`5.1`), `front` (`3.1`), `3.0`, `2.1`, `always`, `always_front`, or `off`. |
+| `--config <path>` | Path to config file (defaults to `virtual-ac3-encoder.conf` next to `engine.exe`). |
+| `--hidden` / `--log <path>` | Run with hidden console window / append output to log file. |
 
-## Set and forget (autostart)
+---
 
-Install the engine to a stable per-user location and have it start hidden at every logon, with
-restart-on-failure (no elevation, no Task Scheduler — a Startup-folder supervisor that runs in the
-real interactive session):
+## Building from Source
 
-```powershell
-scripts\setup-autostart.ps1                                   # VB-CABLE -> Realtek (defaults)
-scripts\setup-autostart.ps1 -In "CABLE Output" -Out "Realtek Digital Output" -Bitrate 640000
-scripts\setup-autostart.ps1 -In "Virtual AC3 Encoder" -Loopback   # when using our own driver
-scripts\remove-autostart.ps1 [-DeleteInstall]                 # undo
-```
-
-This stages `engine.exe` + DLLs to `%LOCALAPPDATA%\virtual-ac3-encoder`, writes
-`virtual-ac3-encoder.conf` there (edit it to change devices/bitrate), and drops a supervisor in the
-Startup folder that runs `engine --hidden --log` and relaunches it if it exits.
-
-## Build (engine)
-
-Requires Visual Studio 2022 (or Build Tools) and CMake. FFmpeg shared dev libs are fetched
-into `third_party/ffmpeg/`.
+### 1. User-Mode Engine & Dolby Control Center (`engine/`)
+Requires **Visual Studio 2022** (Desktop development with C++ workload), **CMake 3.20+**, and **PowerShell**:
 
 ```powershell
-# 1. Fetch FFmpeg dev libraries (DLLs + import libs + headers)
-scripts\fetch-ffmpeg.ps1
+# 1. Fetch prebuilt FFmpeg 8 shared dev libraries & Dear ImGui sources
+.\scripts\fetch-ffmpeg.ps1
+.\scripts\fetch-imgui.ps1
 
-# 2. Configure + build
+# 2. Configure & build Release x64 targets (ac3core, engine, control_center, encode_wav, unit_tests)
 cmake -S engine -B engine\build -G "Visual Studio 17 2022" -A x64
 cmake --build engine\build --config Release
+
+# 3. Run the doctest unit test suite
+ctest --test-dir engine\build -C Release --output-on-failure
 ```
 
-## Phase 1 test
+### 2. Optional Kernel Virtual 5.1 Driver (`driver/`)
+Derived from Microsoft's WaveRT `SimpleAudioSample`, configured as a single 5.1 render-only endpoint (`KSAUDIO_SPEAKER_5POINT1`, 48 kHz 16-bit). Requires **WDK 10.0.26100** and **Secure Boot OFF** (for test-signed loading):
 
 ```powershell
-scripts\make-test-wav.ps1                       # generates engine\test\test_5p1.wav (5.1 tones)
-engine\build\Release\encode_wav.exe engine\test\test_5p1.wav engine\test\out.spdif
+# Build with 64-bit MSBuild
+& "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\amd64\MSBuild.exe" `
+  driver\SimpleAudioSample.sln /p:Configuration=Release /p:Platform=x64 /p:SpectreMitigation=false
 
-# Verify the result is real AC3 inside IEC 61937:
-ffmpeg -f spdif -i engine\test\out.spdif -f null -
+# Install (Elevated PowerShell, Secure Boot OFF):
+.\scripts\install-driver.ps1 -EnableTestSigning   # Reboot after enabling test signing
+.\scripts\install-driver.ps1
 ```
 
-## License
+---
 
-**MIT** — see [`LICENSE`](LICENSE). The kernel driver is derived from Microsoft's MIT-licensed
-SimpleAudioSample, and the engine design is modeled on SoundPusher (MIT); the engine dynamically
-links FFmpeg (LGPL). Full attributions are in [`NOTICE.md`](NOTICE.md). No third-party binaries
-(FFmpeg, VB-CABLE) are committed — they're fetched/installed separately.
+## License & Attributions
+
+Licensed under the **MIT License** — see [`LICENSE`](LICENSE).
+- Real-time master-clock ring-buffer architecture modeled on [SoundPusher](https://codeberg.org/q-p/SoundPusher) (MIT, Daniel Vollmer).
+- Kernel virtual audio driver derived from Microsoft's [Windows Driver Samples `SimpleAudioSample`](https://github.com/microsoft/Windows-driver-samples) (MIT).
+- Dynamically links **FFmpeg** (LGPL) and uses **Dear ImGui** (MIT) for the DirectX 11 Control Center. Full attributions in [`NOTICE.md`](NOTICE.md).

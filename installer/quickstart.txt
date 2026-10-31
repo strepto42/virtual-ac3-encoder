@@ -1,38 +1,36 @@
-Virtual AC3 Encoder - Quick start
-=================================
+Dolby Control Center - Quick Start
+==================================
 
-What it does: encodes your PC's surround audio to AC3 (Dolby Digital) in real time and
-sends it over the optical (Toslink / S-PDIF) output to your AV receiver -- software
-"Dolby Digital Live" / "DTS Connect"-style.
+What it does: captures your PC's stereo or 5.1 surround audio, encodes it in real time to
+DTS 5.1 (1536 / 768 kbps), Dolby Digital AC3 5.1 (640 / 448 kbps), or PCM Stereo 2.0, and
+streams it over your optical (Toslink / S-PDIF) output to your AV receiver or soundbar --
+software "Dolby Digital Live" & "DTS Connect".
 
 Requirements
 ------------
-1. A virtual audio device to capture surround audio. Install VB-CABLE (free):
+1. A virtual audio device to capture audio. Install VB-CABLE (free):
        https://vb-audio.com/Cable/
-   After installing + rebooting, open Windows Sound settings:
-     - Set "CABLE Input (VB-Audio Virtual Cable)" as the DEFAULT playback device.
-     - Right-click it > Configure Speakers > 5.1 Surround.
+   After installing, open Windows Sound settings:
+     - Set "CABLE Input (VB-Audio Virtual Cable)" as your DEFAULT playback device.
+     - (Optional) Configure Speakers > 5.1 Surround, or leave as Stereo and use Dynamic
+       Surround 5.1 / Front Stage 3.1 upmixing in the Control Center.
 
-2. An optical (S-PDIF / Toslink) output that supports AC3 / Dolby Digital passthrough,
-   connected to your receiver's optical input.
+2. An optical (S-PDIF / Toslink) output connected to your receiver's optical input.
 
 How it runs
 -----------
-The engine auto-starts hidden at logon and restarts itself if it stops. It reads its
-settings from  virtual-ac3-encoder.conf  (in this folder).
+Dolby Control Center auto-starts minimized to the system tray at logon and supervises
+the real-time audio engine (engine.exe). Double-click the tray icon to open the Control
+Center and adjust:
+  - Encoder Mode: DTS 5.1, Dolby Digital 5.1 (AC3), or PCM Stereo 2.0
+  - Bitrate & Latency Preset (Extreme ~3ms to Relaxed ~35ms)
+  - Stereo Upmix: Dynamic Surround 5.1, Front Stage 3.1 (Center + Sub), or Off
+  - Individual 6-channel speaker trims (-60 dB to 0 dB) with live VU meters
 
-The default config captures "CABLE Output" and sends AC3 to the first S/PDIF output it
-finds. If you have more than one optical output, use the Start Menu > "Edit config"
-shortcut and set, for example:
-       out=Realtek Digital Output
-(use the exact name shown by:  engine.exe --list)
-
-Then switch your receiver to the matching optical input -- it should display Dolby Digital.
-
-Handy commands (open a terminal in this folder)
------------------------------------------------
+Handy CLI commands (open a terminal in this folder)
+---------------------------------------------------
        engine.exe --list      list audio input/output devices
-       engine.exe --probe     show which outputs accept AC3 passthrough
+       engine.exe --probe     show which outputs accept AC3/DTS passthrough
        engine.exe --version
 
-Project: https://github.com/strepto42/virtual-ac3-encoder
+Project: https://github.com/PatalJunior/virtual-ac3-encoder

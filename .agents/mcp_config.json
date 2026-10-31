@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["tsx", ".agents/scripts/github-mcp.mjs"]
+    },
+    "code-graph": {
+      "command": "npx",
+      "args": ["-y", "@sdsrs/code-graph"]
+    },
+    "drawio": {
+      "command": "drawio-mcp",
+      "args": []
+    }
+  }
+}

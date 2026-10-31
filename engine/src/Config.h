@@ -24,9 +24,47 @@ struct Config
 
   int64_t  bitRate = 640000;
   uint32_t safeFrames = 1536;
+  bool     customSafeFrames = false;
+  std::string latencyMode = "balanced"; // "extreme", "fast", "balanced", "safe", "relaxed"
+
+  uint32_t GetEffectiveSafeFrames() const
+  {
+    if (customSafeFrames && safeFrames > 0)
+      return safeFrames;
+
+    const bool dts = (outputMode == "dts");
+    if (dts)
+    {
+      // DTS frames are 512 samples. WASAPI shared-mode capture operates on a 480-sample (10 ms) quantum.
+      // Generous buffer reserve floors absorb packet boundary jitter and OS thread scheduling latency.
+      if (latencyMode == "extreme" || latencyMode == "ultra")
+        return 512;
+      if (latencyMode == "fast" || latencyMode == "low")
+        return 768;
+      if (latencyMode == "balanced")
+        return 1024;
+      if (latencyMode == "safe")
+        return 1536;
+      return 2048;
+    }
+
+    if (latencyMode == "extreme" || latencyMode == "ultra")
+      return 256;
+    if (latencyMode == "fast" || latencyMode == "low")
+      return 512;
+    if (latencyMode == "balanced")
+      return 768;
+    if (latencyMode == "safe")
+      return 1024;
+    // "relaxed", "normal", or default
+    return 1536;
+  }
 
   // Stereo->5.1 upmix mode for <=2ch input: "off" (swr default) or "surround"
   // (FFmpeg `surround` FFT upmix). Multichannel input is always downmixed to 5.1.
   // Default "surround": this tool targets a 5.1 optical path, so stereo sources use all speakers.
+  // Physical output format: "ac3" (Dolby Digital), "dts" (DTS Core), or "pcm" (stereo PCM).
+  std::string outputMode = "ac3";
+  int64_t dtsBitRate = 1536000; // DTS Core: 1536000 (full-rate 1.5 Mbps) or 768000 (half-rate)
   std::string upmix = "surround";
 };

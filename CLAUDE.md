@@ -85,8 +85,13 @@ precedence: defaults < config file (`virtual-ac3-encoder.conf` next to the exe; 
 
 **Surround upmix:** `SpdifEncoder` runs an FFmpeg `surround` libavfilter graph (abuffer → surround →
 aformat → abuffersink) for <=2ch input when `upmix=surround`, accumulating output in an `AVAudioFifo`
-and priming with silence (FFT latency) so the realtime consumer doesn't starve. Needs the `avfilter`
-lib (linked in CMake). `log` is a VBScript reserved word — unrelated, but note prior gotchas list.
+and priming with silence (FFT latency) so the realtime consumer doesn't starve. For **multichannel
+input** (e.g. VB-CABLE set to 5.1), "dynamic upmix" auto-detects stereo content: if only FL+FR carry
+signal (RMS of other channels < -60 dB), the FL+FR pair is extracted and routed through the surround
+filter; if real multichannel content is detected (e.g. Netflix 5.1), it passes through via swr. Both
+the filter graph (stereo input) and swr (multichannel) stay initialized to avoid re-priming latency.
+Needs the `avfilter` lib (linked in CMake). `log` is a VBScript reserved word — unrelated, but note
+prior gotchas list.
 
 ## Autostart ("set and forget")
 `scripts/setup-autostart.ps1` stages the engine to `%LOCALAPPDATA%\virtual-ac3-encoder` (+ FFmpeg &

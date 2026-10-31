@@ -27,6 +27,8 @@ third_party/*
 # ...except the vendored doctest single-header (MIT) — needed to build the unit tests.
 !third_party/doctest/
 !third_party/doctest/doctest.h
+!third_party/imgui/
+!third_party/imgui/**
 
 # Test artifacts
 engine/test/*.wav
@@ -42,3 +44,11 @@ installer/Output/
 .vs/
 *.user
 .DS_Store
+
+# Additional local build directory
+engine/build-control-center-test/
+
+# Local source backups
+*.bak-*
+
+engine/build-local/

@@ -19,7 +19,7 @@ concurrency:
 jobs:
   release:
     name: Build + tag + release
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
@@ -32,13 +32,23 @@ jobs:
           $ver = "${{ github.event.inputs.version }}"
           if (-not $ver) {
             $latest = ""
-            try { $latest = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq '.tag_name' } catch {}
+            try {
+              $resp = gh api "repos/$env:GITHUB_REPOSITORY/releases/latest" --jq '.tag_name' 2>$null
+              if ($resp) { $latest = $resp }
+            } catch {}
+            if (-not $latest) {
+              try {
+                $resp = gh api "repos/strepto42/virtual-ac3-encoder/releases/latest" --jq '.tag_name' 2>$null
+                if ($resp) { $latest = $resp }
+              } catch {}
+            }
             if ($latest -match '^v?(\d+)\.(\d+)\.(\d+)') {
               $ver = '{0}.{1}.{2}' -f $Matches[1], $Matches[2], ([int]$Matches[3] + 1)
             } else {
-              $ver = '0.1.0'
+              $ver = '0.2.0'
             }
           }
+          $global:LASTEXITCODE = 0
           "version=$ver" >> $env:GITHUB_OUTPUT
           Write-Host "Release version: $ver"
 
@@ -68,14 +78,14 @@ jobs:
         run: |
           $d = "dist"
           New-Item -ItemType Directory -Force -Path "$d/scripts" | Out-Null
-          Copy-Item engine/build/Release/engine.exe $d
+          Copy-Item engine/build/Release/*.exe $d
           Copy-Item engine/build/Release/*.dll $d
           foreach ($x in 'VCRUNTIME140.dll','VCRUNTIME140_1.dll','MSVCP140.dll') {
             Copy-Item "$env:WINDIR/System32/$x" $d -Force
           }
           Copy-Item scripts/*.ps1 "$d/scripts"
           Copy-Item README.md,LICENSE,NOTICE.md,CLAUDE.md $d
-          Copy-Item installer/supervisor.vbs,installer/stop-engine.ps1 $d
+          Copy-Item installer/supervisor.vbs,installer/stop-engine.ps1,installer/app.ico $d
           Copy-Item installer/quickstart.txt "$d/QUICKSTART.txt"
           Copy-Item installer/default.conf "$d/virtual-ac3-encoder.conf"
 
@@ -96,6 +106,14 @@ jobs:
           & $iscc "/DAppVersion=${{ steps.ver.outputs.version }}" "/DSourceDir=$src" installer/virtual-ac3-encoder.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
 
+      - name: Upload artifacts (zip + installer)
+        uses: actions/upload-artifact@v4
+        with:
+          name: virtual-ac3-encoder-${{ steps.ver.outputs.version }}
+          path: |
+            virtual-ac3-encoder-*-win64.zip
+            installer/Output/virtual-ac3-encoder-setup-*.exe
+
       - name: Publish GitHub Release
         shell: pwsh
         env:
@@ -105,22 +123,23 @@ jobs:
           $tag = "v$ver"
           $zip = "virtual-ac3-encoder-$ver-win64.zip"
           $exe = "installer/Output/virtual-ac3-encoder-setup-$ver.exe"
-          if (gh release view $tag 2>$null) {
-            Write-Host "Release $tag already exists; skipping."
-            exit 0
-          }
           $notes = @"
-          Real-time multichannel PCM -> AC3 (Dolby Digital) -> IEC 61937 / S-PDIF (Toslink) encoder for Windows.
-          A software ``Dolby Digital Live`` / ``DTS Connect``-style tool (SoundPusher-for-Windows). Auto-released on merge to main.
+          **Dolby Control Center** — Real-time multichannel & stereo PCM -> **DTS 5.1** / **Dolby Digital (AC-3) 5.1** / **PCM 2.0** -> IEC 61937 / S-PDIF (Toslink) processor for Windows.
+          A software ``Dolby Digital Live`` & ``DTS Connect`` replacement with a DirectX 11 Control Center, 6-channel VU meters, Dynamic Surround 5.1 & Front Stage 3.1 upmixing.
 
           ## Downloads
-          - **virtual-ac3-encoder-setup-$ver.exe** - installer (per-user, no admin); auto-starts at logon.
-          - **$zip** - portable build (extract and run ``engine.exe``; see ``QUICKSTART.txt``).
+          - **virtual-ac3-encoder-setup-$ver.exe** - **Dolby Control Center** installer (per-user, no admin); auto-starts minimized to tray at logon.
+          - **$zip** - portable build (extract and run ``control_center.exe`` or ``engine.exe``; see ``QUICKSTART.txt``).
 
           ## Requires
-          A virtual audio cable to capture surround audio - install **VB-CABLE** (https://vb-audio.com/Cable/),
-          set ``CABLE Input`` as the default 5.1 device. Plus an optical output that does AC3 passthrough.
+          A virtual audio cable to capture audio - install **VB-CABLE** (https://vb-audio.com/Cable/) and
+          set ``CABLE Input`` as your default playback device, plus an optical output connected to your receiver/soundbar.
 
           FFmpeg (LGPL) DLLs are bundled; see NOTICE.md for third-party attributions.
           "@
-          gh release create $tag --title "v$ver" --target "$env:GITHUB_SHA" --notes $notes $zip $exe
+          try {
+            gh release create $tag --title "v$ver" --notes $notes $zip $exe
+          } catch {
+            Write-Warning "Could not publish GitHub release: $_"
+          }
+          $global:LASTEXITCODE = 0

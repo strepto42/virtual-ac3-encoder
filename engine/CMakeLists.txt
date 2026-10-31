@@ -67,8 +67,13 @@ stage_ffmpeg_dlls(encode_wav)
 # ---------------------------------------------------------------------------
 # Phase 2 live engine: WASAPI capture -> ring -> AC3 exclusive passthrough
 # ---------------------------------------------------------------------------
+set_source_files_properties(src/app.rc PROPERTIES
+  INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
 add_executable(engine
   src/main.cpp
+  src/app.rc
   src/Config.h
   src/ComUtil.cpp
   src/ComUtil.h
@@ -78,9 +83,11 @@ add_executable(engine
   src/WasapiCapture.cpp
   src/WasapiCapture.h
   src/WasapiPassthrough.cpp
+  src/WasapiPcmOutput.cpp
   src/WasapiPassthrough.h
+  src/WasapiPcmOutput.h
 )
-target_link_libraries(engine PRIVATE ac3core ffmpeg ole32 avrt)
+target_link_libraries(engine PRIVATE ac3core ffmpeg ole32 avrt winmm)
 if(MSVC)
   target_compile_options(engine PRIVATE /permissive-)
 endif()
@@ -89,9 +96,38 @@ endif()
 set(VAC3_VERSION "0.0.0-dev" CACHE STRING "Engine version string")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/Version.h.in"
                "${CMAKE_CURRENT_BINARY_DIR}/generated/Version.h" @ONLY)
-target_include_directories(engine PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_include_directories(engine PRIVATE
+  src
+  "${CMAKE_CURRENT_BINARY_DIR}/generated"
+)
 stage_ffmpeg_dlls(engine)
 
+# ---------------------------------------------------------------------------
+# Native Windows GUI for live engine control (Dear ImGui + DirectX 11)
+# ---------------------------------------------------------------------------
+set(IMGUI_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/imgui")
+add_executable(control_center WIN32
+  src/ControlCenter.cpp
+  src/Guids.cpp
+  src/app.rc
+  "${IMGUI_DIR}/imgui.cpp"
+  "${IMGUI_DIR}/imgui_draw.cpp"
+  "${IMGUI_DIR}/imgui_tables.cpp"
+  "${IMGUI_DIR}/imgui_widgets.cpp"
+  "${IMGUI_DIR}/backends/imgui_impl_win32.cpp"
+  "${IMGUI_DIR}/backends/imgui_impl_dx11.cpp"
+)
+target_include_directories(control_center PRIVATE
+  src
+  "${CMAKE_CURRENT_BINARY_DIR}/generated"
+  "${IMGUI_DIR}"
+  "${IMGUI_DIR}/backends"
+)
+target_link_libraries(control_center PRIVATE comctl32 ole32 propsys d3d11 dxgi dwmapi winmm)
+target_compile_definitions(control_center PRIVATE UNICODE _UNICODE)
+if(MSVC)
+  target_compile_options(control_center PRIVATE /W4 /permissive- /utf-8)
+endif()
 # ---------------------------------------------------------------------------
 # Unit tests (doctest) — RingBuffer + encoder contract
 # ---------------------------------------------------------------------------

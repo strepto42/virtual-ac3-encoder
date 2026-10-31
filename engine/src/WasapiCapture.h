@@ -36,7 +36,8 @@ public:
   //   loopback == true : a RENDER endpoint captured via AUDCLNT_STREAMFLAGS_LOOPBACK (polled;
   //                      loopback streams don't support event-driven mode). This is how the
   //                      engine reads the virtual 5.1 sink's mix.
-  bool Init(IMMDevice* dev, bool loopback = false);
+  //   bufferHns: WASAPI buffer duration in 100ns units (e.g. 100000 = 10ms, 200000 = 20ms)
+  bool Init(IMMDevice* dev, bool loopback = false, REFERENCE_TIME bufferHns = 100000);
   // Destination ring for captured samples (set before Start, once it can be sized).
   void SetRing(RingBuffer* ring) { ring_ = ring; }
   bool Start();
@@ -53,6 +54,8 @@ private:
   CaptureFormat             fmt_;
 
   bool                      loopback_ = false;
+  bool                      isEventDriven_ = false;
+  REFERENCE_TIME            bufferHns_ = 100000;
   HANDLE                    dataEvent_ = nullptr;
   HANDLE                    stopEvent_ = nullptr;
   std::thread               thread_;
