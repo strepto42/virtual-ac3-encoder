@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   Сборка AC3/DTS Control Center v2 (engine.exe + control_center.exe) и раскладка в .\bin
 
@@ -23,6 +23,7 @@ param(
   [string]$LegacyDir  = 'E:\SS data\src\github-publish-virtual-ac3-encoder-control-center',
   [string]$V2Dir      = 'C:\VirtualAc3-ControlCenter-v2',
   [string]$QtDir      = '',
+  [string]$Version    = '3.0.0-dev',
   [switch]$RunTests,
   [switch]$Clean
 )
@@ -100,7 +101,7 @@ if ($qt) {
 } else {
   Write-Warning 'Qt 6 (MSVC 64-bit) не найден: будут собраны только engine.exe и старая панель. Установи Qt 6 и укажи -QtDir "C:\Qt\6.x.x\msvc2022_64".'
 }
-& $cmake -S $engine -B $buildDir -A x64 "-DFFMPEG_ROOT=$ff" "-DVAC3_VERSION=3.0-qt1" @qtArgs
+& $cmake -S $engine -B $buildDir -A x64 "-DFFMPEG_ROOT=$ff" "-DVAC3_VERSION=$Version" @qtArgs
 if ($LASTEXITCODE -ne 0) { throw 'CMake configure не удался.' }
 & $cmake --build $buildDir --config Release
 if ($LASTEXITCODE -ne 0) { throw 'Сборка не удалась. Пришли текст ошибок.' }
@@ -192,3 +193,4 @@ Write-Host "Панели Qt: $binDir\ControlCenter_A_Mixer.exe (вариант A
 Write-Host "DSP Studio: $binDir\VirtualAc3-DSP-Studio.exe (также кнопка 'DSP Studio…' в панелях)"
 Write-Host "Старая панель Win32: $binDir\control_center.exe"
 Write-Host 'Первый запуск: закрой старую панель и старый engine.exe (или согласись на их закрытие в диалоге).'
+
