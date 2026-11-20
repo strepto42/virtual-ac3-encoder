@@ -20,7 +20,7 @@
 [CmdletBinding()]
 param(
   [string]$FfmpegRoot = '',
-  [string]$LegacyDir  = 'E:\SS data\src\github-publish-virtual-ac3-encoder-control-center',
+  [string]$LegacyDir  = '',
   [string]$V2Dir      = 'C:\VirtualAc3-ControlCenter-v2',
   [string]$QtDir      = '',
   [string]$Version    = '3.0.0-dev',
@@ -37,7 +37,9 @@ function Find-FFmpeg {
   $candidates = @()
   if ($FfmpegRoot) { $candidates += $FfmpegRoot }
   $candidates += (Join-Path $root 'third_party\ffmpeg')
-  $candidates += (Join-Path $LegacyDir 'third_party\ffmpeg')
+  if ($LegacyDir -and (Test-Path -LiteralPath $LegacyDir)) {
+    $candidates += (Join-Path $LegacyDir 'third_party\ffmpeg')
+  }
   foreach ($c in $candidates) {
     if (Test-Path (Join-Path $c 'include\libavcodec\avcodec.h')) { return (Resolve-Path $c).Path }
   }
@@ -159,15 +161,17 @@ function Import-IfMissing([string]$name, [string[]]$sources) {
     if (Test-Path $s) { Copy-Item $s $target; Write-Host "Перенесён $name из $s"; return }
   }
 }
-Import-IfMissing 'virtual-ac3-encoder.conf' @(
-  (Join-Path $V2Dir 'bin\virtual-ac3-encoder.conf'),
-  (Join-Path $LegacyDir 'engine\build\Release\virtual-ac3-encoder.conf'),
-  (Join-Path $env:LOCALAPPDATA 'virtual-ac3-encoder\virtual-ac3-encoder.conf'),
-  (Join-Path $root 'installer\default.conf'))
-Import-IfMissing 'ac3-control.ini' @(
-  (Join-Path $V2Dir 'bin\ac3-control.ini'),
-  (Join-Path $LegacyDir 'engine\build\Release\ac3-control.ini'),
-  (Join-Path $env:LOCALAPPDATA 'virtual-ac3-encoder\ac3-control.ini'))
+$confSources = @()
+if ($V2Dir -and (Test-Path -LiteralPath $V2Dir)) { $confSources += Join-Path $V2Dir 'bin\virtual-ac3-encoder.conf' }
+if ($LegacyDir -and (Test-Path -LiteralPath $LegacyDir)) { $confSources += Join-Path $LegacyDir 'engine\build\Release\virtual-ac3-encoder.conf' }
+$confSources += Join-Path $env:LOCALAPPDATA 'virtual-ac3-encoder\virtual-ac3-encoder.conf'
+$confSources += Join-Path $root 'installer\default.conf'
+Import-IfMissing 'virtual-ac3-encoder.conf' $confSources
+$controlSources = @()
+if ($V2Dir -and (Test-Path -LiteralPath $V2Dir)) { $controlSources += Join-Path $V2Dir 'bin\ac3-control.ini' }
+if ($LegacyDir -and (Test-Path -LiteralPath $LegacyDir)) { $controlSources += Join-Path $LegacyDir 'engine\build\Release\ac3-control.ini' }
+$controlSources += Join-Path $env:LOCALAPPDATA 'virtual-ac3-encoder\ac3-control.ini'
+Import-IfMissing 'ac3-control.ini' $controlSources
 
 # DSP (эквалайзер + компрессор): рабочий файл настроек (создаётся один раз, твои правки не затираются)
 # и готовые пресеты. Чтобы применить пресет, скопируй его поверх bin\dsp-settings.json.
@@ -193,4 +197,5 @@ Write-Host "Панели Qt: $binDir\ControlCenter_A_Mixer.exe (вариант A
 Write-Host "DSP Studio: $binDir\VirtualAc3-DSP-Studio.exe (также кнопка 'DSP Studio…' в панелях)"
 Write-Host "Старая панель Win32: $binDir\control_center.exe"
 Write-Host 'Первый запуск: закрой старую панель и старый engine.exe (или согласись на их закрытие в диалоге).'
+
 
