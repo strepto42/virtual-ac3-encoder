@@ -31,7 +31,7 @@ Useful build-script options:
 
 ```powershell
 .\build.ps1 -RunTests  # Build and run unit_tests.exe
-.\build.ps1 -Clean     # Remove the CMake build directory before configuring
+.\build.ps1 -Clean     # Remove the CMake build directory before configuring`r`n.\build.ps1 -Version "3.1.0"  # Set the version string embedded in engine.exe
 ```
 
 The script writes generated files to `engine\build` and deploys runnable binaries to `bin`. Do not commit these generated outputs or downloaded FFmpeg binaries.
@@ -58,3 +58,4 @@ The `driver` directory contains a virtual audio endpoint derived from Microsoft'
 - **Qt panels are missing:** install Qt 6 for MSVC 2022 x64 with Widgets and Network, then pass its directory with `-QtDir`.
 - **A staged executable cannot be replaced:** close the panel and `engine.exe`, then rerun the build.
 - **The receiver stays on PCM or does not lock:** confirm that the selected output supports AC-3/DTS passthrough and that the receiver is connected to that output. `engine.exe --probe` can check AC-3 passthrough support.
+
