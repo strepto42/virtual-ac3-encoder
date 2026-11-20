@@ -126,6 +126,8 @@ std::vector<double> AntiPhaseSurroundRms(SpdifEncoder::Upmix mode)
   p.sampleRate = 48000;
   p.inSampleFmt = AV_SAMPLE_FMT_FLT;
   p.upmix = mode;
+  p.headroomDb = 0.0f;  // this test measures the upmix itself, not the anti-clipping trim
+  p.limiter = false;
   av_channel_layout_default(&p.inLayout, 2);
   SpdifEncoder enc;
   bool ok = enc.Init(p);
@@ -157,7 +159,159 @@ std::vector<double> AntiPhaseSurroundRms(SpdifEncoder::Upmix mode)
   return rms;
 }
 
+// Front-left RMS after AC3 encode+decode for an in-phase 440 Hz stereo tone (amplitude 0.5).
+double FrontLeftRms(float headroomDb)
+{
+  SpdifEncoder::Params p;
+  p.sampleRate = 48000;
+  p.inSampleFmt = AV_SAMPLE_FMT_FLT;
+  p.upmix = SpdifEncoder::Upmix::Off;
+  p.headroomDb = headroomDb;
+  p.limiter = false;
+  av_channel_layout_default(&p.inLayout, 2);
+  SpdifEncoder enc;
+  bool ok = enc.Init(p);
+  av_channel_layout_uninit(&p.inLayout);
+  REQUIRE(ok);
+
+  const int fpp = enc.FramesPerPacket();
+  std::vector<float> in(static_cast<size_t>(fpp) * 2);
+  std::vector<uint8_t> out(SpdifEncoder::kMaxBytesPerPacket);
+  std::vector<uint8_t> stream;
+  long long t = 0;
+  for (int pk = 0; pk < 24; ++pk)
+  {
+    for (int i = 0; i < fpp; ++i)
+    {
+      const float s = 0.5f * static_cast<float>(std::sin(2.0 * kPi * 440.0 * double(t + i) / 48000.0));
+      in[2 * i] = s;
+      in[2 * i + 1] = s;
+    }
+    t += fpp;
+    int n = enc.EncodePacket(reinterpret_cast<uint8_t*>(in.data()), out.data(),
+                             static_cast<int>(out.size()));
+    if (n > 0) stream.insert(stream.end(), out.data(), out.data() + n);
+  }
+  REQUIRE(stream.size() > static_cast<size_t>(6144) * 4);
+  std::vector<double> rms = DecodeSpdifAc3Rms(stream.data(), static_cast<int>(stream.size()));
+  REQUIRE(rms.size() >= 6);
+  return rms[0];
+}
+
+// 6-channel (5.1) input like a VB-CABLE 5.1 loopback: FL/FR carry an anti-phase 440 Hz tone
+// (L = +s, R = -s); the centre carries a 220 Hz tone of amplitude `centreAmp`; LFE/SL/SR are silent.
+// Returns the per-channel RMS of a steady-state decoded frame (FL FR FC LFE SL SR).
+std::vector<double> SixChannelRms(SpdifEncoder::Upmix mode, float centreAmp)
+{
+  SpdifEncoder::Params p;
+  p.sampleRate = 48000;
+  p.inSampleFmt = AV_SAMPLE_FMT_FLT;
+  p.upmix = mode;
+  p.headroomDb = 0.0f;
+  p.limiter = false;
+  REQUIRE(av_channel_layout_from_string(&p.inLayout, "5.1") == 0);
+  SpdifEncoder enc;
+  bool ok = enc.Init(p);
+  av_channel_layout_uninit(&p.inLayout);
+  REQUIRE(ok);
+
+  const int fpp = enc.FramesPerPacket();
+  std::vector<float> in(static_cast<size_t>(fpp) * 6);
+  std::vector<uint8_t> out(SpdifEncoder::kMaxBytesPerPacket);
+  std::vector<uint8_t> stream;
+  long long t = 0;
+  for (int pk = 0; pk < 48; ++pk) // ~1.5 s: detection (0.2 s) + filter latency + steady state
+  {
+    for (int i = 0; i < fpp; ++i)
+    {
+      const double time = double(t + i) / 48000.0;
+      const float s = 0.5f * static_cast<float>(std::sin(2.0 * kPi * 440.0 * time));
+      float* frame = &in[static_cast<size_t>(i) * 6];
+      frame[0] = s;
+      frame[1] = -s;
+      frame[2] = centreAmp * static_cast<float>(std::sin(2.0 * kPi * 220.0 * time));
+      frame[3] = frame[4] = frame[5] = 0.0f;
+    }
+    t += fpp;
+    int n = enc.EncodePacket(reinterpret_cast<uint8_t*>(in.data()), out.data(),
+                             static_cast<int>(out.size()));
+    if (n > 0) stream.insert(stream.end(), out.data(), out.data() + n);
+  }
+  REQUIRE(stream.size() > static_cast<size_t>(6144) * 8);
+  std::vector<double> rms = DecodeSpdifAc3Rms(stream.data(), static_cast<int>(stream.size()));
+  REQUIRE(rms.size() >= 6);
+  return rms;
+}
+
 } // namespace
+
+TEST_CASE("auto-upmix: stereo-only 5.1 input (silent C/SL/SR) is upmixed into the surrounds")
+{
+  const std::vector<double> off = SixChannelRms(SpdifEncoder::Upmix::Off, 0.0f);
+  const std::vector<double> autoMode = SixChannelRms(SpdifEncoder::Upmix::Auto, 0.0f);
+  MESSAGE("surround RMS  off: " << off[4] << "/" << off[5] << "   auto: " << autoMode[4] << "/" << autoMode[5]);
+  CHECK(off[4] < 0.001);
+  CHECK(off[5] < 0.001);
+  CHECK(autoMode[4] > 0.05);
+  CHECK(autoMode[5] > 0.05);
+}
+
+TEST_CASE("auto-upmix: real 5.1 input (active centre) is passed through untouched")
+{
+  const std::vector<double> rms = SixChannelRms(SpdifEncoder::Upmix::Auto, 0.3f);
+  MESSAGE("auto, centre active: FC=" << rms[2] << " SL=" << rms[4] << " SR=" << rms[5]);
+  CHECK(rms[2] > 0.1);    // centre tone arrives on the centre channel
+  CHECK(rms[4] < 0.001);  // no surround content invented
+  CHECK(rms[5] < 0.001);
+}
+
+TEST_CASE("surround upmix initialises and produces packets with every FFT window size")
+{
+  for (int win : {0, 2048, 1024})
+  {
+    SpdifEncoder::Params p;
+    p.sampleRate = 48000;
+    p.inSampleFmt = AV_SAMPLE_FMT_FLT;
+    p.upmix = SpdifEncoder::Upmix::Surround;
+    p.upmixWinSize = win;
+    p.headroomDb = 0.0f;
+    p.limiter = false;
+    av_channel_layout_default(&p.inLayout, 2);
+    SpdifEncoder enc;
+    bool ok = enc.Init(p);
+    av_channel_layout_uninit(&p.inLayout);
+    REQUIRE(ok);
+    const int fpp = enc.FramesPerPacket();
+    std::vector<float> in(static_cast<size_t>(fpp) * 2);
+    std::vector<uint8_t> out(SpdifEncoder::kMaxBytesPerPacket);
+    long long t = 0;
+    int produced = 0;
+    for (int pk = 0; pk < 20; ++pk)
+    {
+      for (int i = 0; i < fpp; ++i)
+      {
+        const float s = 0.3f * static_cast<float>(std::sin(2.0 * kPi * 440.0 * double(t + i) / 48000.0));
+        in[2 * i] = s;
+        in[2 * i + 1] = -s;
+      }
+      t += fpp;
+      if (enc.EncodePacket(reinterpret_cast<uint8_t*>(in.data()), out.data(), static_cast<int>(out.size())) > 0)
+        ++produced;
+    }
+    CHECK(produced > 10);
+  }
+}
+
+TEST_CASE("headroom trims the encoded level by the configured number of dB")
+{
+  const double full = FrontLeftRms(0.0f);
+  const double trimmed = FrontLeftRms(-6.0f);
+  MESSAGE("front-left RMS: 0 dB=" << full << "  -6 dB=" << trimmed);
+  REQUIRE(full > 0.1);
+  const double ratio = trimmed / full;
+  CHECK(ratio > 0.45);   // -6.02 dB = x0.501 (AC3 is lossy, allow a few percent)
+  CHECK(ratio < 0.56);
+}
 
 TEST_CASE("upmix=surround steers anti-phase stereo into the surround channels")
 {

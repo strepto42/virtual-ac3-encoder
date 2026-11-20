@@ -44,6 +44,12 @@ public:
 
   const CaptureFormat& Format() const { return fmt_; }
 
+  // Diagnostics since the previous call. A discontinuity flag is also raised once when playback
+  // starts after silence; many per minute mean the capture buffer overran (lost audio).
+  uint32_t TakeDiscontinuities() { return discontinuities_.exchange(0, std::memory_order_relaxed); }
+  // Times the ring was full and captured audio had to be dropped.
+  uint32_t TakeRingOverflows() { return ringOverflows_.exchange(0, std::memory_order_relaxed); }
+
 private:
   void ThreadProc();
 
@@ -57,4 +63,6 @@ private:
   HANDLE                    stopEvent_ = nullptr;
   std::thread               thread_;
   std::atomic_bool          running_{false};
+  std::atomic<uint32_t>     discontinuities_{0};
+  std::atomic<uint32_t>     ringOverflows_{0};
 };
