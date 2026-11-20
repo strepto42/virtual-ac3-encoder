@@ -82,6 +82,7 @@ jobs:
           Copy-Item 'bin/*' $d -Recurse -Force
           Copy-Item README.md, README-DSP.md, CONTRIBUTING.md, NOTICE.md, LICENSE $d
           Copy-Item docs $d -Recurse -Force
+          Copy-Item installer/quickstart.txt "$d/QUICKSTART.txt"
 
       - name: Create release archive
         shell: pwsh
