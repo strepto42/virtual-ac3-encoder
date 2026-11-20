@@ -65,6 +65,7 @@ TEST_CASE("meter block: a reader never sees a torn block while the writer publis
   std::thread w([&] {
     DspMeterBlock v;
     float x = 1.0f;
+    unsigned writes = 0;
     while (!stop.load())
     {
       for (int c = 0; c < kMaxChannels; ++c)
@@ -72,6 +73,9 @@ TEST_CASE("meter block: a reader never sees a torn block while the writer publis
       v.compReductionDb = v.limiterReductionDb = x;
       writer.Publish(v);
       x += 1.0f;
+      // Let the reader run regularly even on heavily contended CI runners.
+      if (++writes % 64 == 0)
+        std::this_thread::yield();
     }
   });
   bool torn = false;
@@ -293,3 +297,4 @@ TEST_CASE("undo history with DspParams: one gesture = one step, float noise is n
   CHECK(h.Redo(m.params));
   CHECK(m.Band(7) == 4.0f);
 }
+
