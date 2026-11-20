@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  push:
+    branches: [codex/v3-eq-dsp-publish-2026-11-20]
   pull_request:
-    branches: [main]
+    branches: [codex/v3-eq-dsp-publish-2026-11-20]
   workflow_dispatch:
 
 jobs:
