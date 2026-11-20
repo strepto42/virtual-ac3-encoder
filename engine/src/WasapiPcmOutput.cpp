@@ -1,5 +1,6 @@
 // WasapiPcmOutput.cpp — shared-mode stereo PCM renderer.
 #include "WasapiPcmOutput.h"
+#include "dsp/PcmDsp.h"
 
 #include <mmreg.h>
 #include <ksmedia.h>
@@ -160,6 +161,11 @@ bool WasapiPcmOutput::Init(IMMDevice* dev, RingBuffer* ring, const CaptureFormat
     return false;
   }
 
+  // DSP chain on the L/R stream; scratch planes are sized here so the audio thread never allocates.
+  dsp_.Configure(2, static_cast<int>(outRate_));
+  dspLeft_.assign(bufferFrames_, 0.0f);
+  dspRight_.assign(bufferFrames_, 0.0f);
+
   std::printf("[WasapiPcmOutput] initialized normal PCM output: 2 ch, %u Hz, %u-bit %s (shared mode, not IEC 61937)\n",
               outRate_, outBits_, outSampleFmt_ == AV_SAMPLE_FMT_FLT ? "float" : "integer");
   return true;
@@ -196,6 +202,19 @@ void WasapiPcmOutput::Stop()
   if (stopEvent_) SetEvent(stopEvent_);
   if (thread_.joinable()) thread_.join();
   if (client_) client_->Stop();
+}
+
+// Equalizer + compressor on the converted L/R stream (before the trims below). No-op while the
+// DSP is off, so a disabled DSP never alters the stream.
+void WasapiPcmOutput::ApplyDsp(uint8_t* data, uint32_t frames)
+{
+  if (!data || frames == 0 || frames > dspLeft_.size()) return;
+  vac3dsp::PcmFormat fmt;
+  if (outSampleFmt_ == AV_SAMPLE_FMT_FLT) fmt = vac3dsp::PcmFormat::Float32;
+  else if (outSampleFmt_ == AV_SAMPLE_FMT_S16) fmt = vac3dsp::PcmFormat::Int16;
+  else if (outSampleFmt_ == AV_SAMPLE_FMT_S32) fmt = vac3dsp::PcmFormat::Int32;
+  else return;
+  vac3dsp::ProcessInterleavedStereo(dsp_, fmt, data, static_cast<int>(frames), dspLeft_.data(), dspRight_.data());
 }
 
 void WasapiPcmOutput::ApplyStereoGains(uint8_t* data, uint32_t frames)
@@ -283,6 +302,7 @@ void WasapiPcmOutput::ThreadProc()
       if (static_cast<UINT32>(produced) < writableFrames)
         std::memset(output + static_cast<size_t>(produced) * outBytesPerFrame_, 0,
                     static_cast<size_t>(writableFrames - static_cast<UINT32>(produced)) * outBytesPerFrame_);
+      ApplyDsp(output, static_cast<uint32_t>(produced));
       ApplyStereoGains(output, static_cast<uint32_t>(produced));
     }
 

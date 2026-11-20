@@ -2,28 +2,37 @@ name: Release
 
 on:
   push:
-    branches: [ main ]      # every merge to main -> tag + build + release
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Explicit version e.g. 0.2.0 (default: auto patch-bump from latest release)'
+        description: 'Release version, for example 3.1.0 (defaults to an automatic patch bump)'
         required: false
 
 permissions:
-  contents: write           # create tags + releases
+  contents: write
 
 concurrency:
-  group: release            # serialize releases so version bumps don't collide
+  group: release
   cancel-in-progress: false
 
 jobs:
   release:
-    name: Build + tag + release
-    runs-on: windows-latest
+    name: Build and publish v3 portable release
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
-      - name: Determine version (explicit input, else auto patch-bump)
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Determine version
         id: ver
         shell: pwsh
         env:
@@ -36,65 +45,43 @@ jobs:
             if ($latest -match '^v?(\d+)\.(\d+)\.(\d+)') {
               $ver = '{0}.{1}.{2}' -f $Matches[1], $Matches[2], ([int]$Matches[3] + 1)
             } else {
-              $ver = '0.1.0'
+              $ver = '3.0.0'
             }
           }
           "version=$ver" >> $env:GITHUB_OUTPUT
           Write-Host "Release version: $ver"
 
-      - name: Cache FFmpeg dev libs
-        id: ffcache
+      - name: Cache FFmpeg development libraries
+        id: ffmpeg-cache
         uses: actions/cache@v4
         with:
           path: third_party/ffmpeg
           key: ffmpeg-${{ runner.os }}-${{ hashFiles('scripts/fetch-ffmpeg.ps1') }}
 
       - name: Fetch FFmpeg
-        if: steps.ffcache.outputs.cache-hit != 'true'
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: ./scripts/fetch-ffmpeg.ps1
 
-      - name: Configure + build (Release)
+      - name: Build and run unit tests
+        shell: pwsh
+        env:
+          VAC3_VERSION: ${{ steps.ver.outputs.version }}
+        run: ./build.ps1 -QtDir "$env:QT_ROOT_DIR" -Version "$env:VAC3_VERSION" -RunTests
+
+      - name: Assemble portable package
         shell: pwsh
         run: |
-          cmake -S engine -B engine/build -G "Visual Studio 17 2022" -A x64 "-DVAC3_VERSION=${{ steps.ver.outputs.version }}"
-          cmake --build engine/build --config Release
-
-      - name: Unit tests (ctest)
-        run: ctest --test-dir engine/build -C Release --output-on-failure
-
-      - name: Assemble dist staging
-        shell: pwsh
-        run: |
-          $d = "dist"
-          New-Item -ItemType Directory -Force -Path "$d/scripts" | Out-Null
-          Copy-Item engine/build/Release/engine.exe $d
-          Copy-Item engine/build/Release/*.dll $d
-          foreach ($x in 'VCRUNTIME140.dll','VCRUNTIME140_1.dll','MSVCP140.dll') {
-            Copy-Item "$env:WINDIR/System32/$x" $d -Force
-          }
-          Copy-Item scripts/*.ps1 "$d/scripts"
-          Copy-Item README.md,LICENSE,NOTICE.md,CLAUDE.md $d
-          Copy-Item installer/supervisor.vbs,installer/stop-engine.ps1 $d
+          $d = 'dist'
+          New-Item -ItemType Directory -Force -Path $d | Out-Null
+          Copy-Item 'bin/*' $d -Recurse -Force
+          Copy-Item README.md, README-DSP.md, CONTRIBUTING.md, NOTICE.md, LICENSE $d
+          Copy-Item docs $d -Recurse -Force
           Copy-Item installer/quickstart.txt "$d/QUICKSTART.txt"
-          Copy-Item installer/default.conf "$d/virtual-ac3-encoder.conf"
 
-      - name: Create portable zip
+      - name: Create release archive
         shell: pwsh
-        run: Compress-Archive -Path dist/* -DestinationPath "virtual-ac3-encoder-${{ steps.ver.outputs.version }}-win64.zip" -Force
-
-      - name: Build installer (Inno Setup)
-        shell: pwsh
-        run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) {
-            choco install innosetup -y --no-progress | Out-Null
-            $cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-            $iscc = if ($cmd) { $cmd.Source } else { "$env:ProgramData\chocolatey\bin\ISCC.exe" }
-          }
-          $src = (Resolve-Path dist).Path
-          & $iscc "/DAppVersion=${{ steps.ver.outputs.version }}" "/DSourceDir=$src" installer/virtual-ac3-encoder.iss
-          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+        run: Compress-Archive -Path 'dist/*' -DestinationPath "virtual-ac3-control-center-${{ steps.ver.outputs.version }}-win64.zip" -Force
 
       - name: Publish GitHub Release
         shell: pwsh
@@ -103,24 +90,16 @@ jobs:
         run: |
           $ver = "${{ steps.ver.outputs.version }}"
           $tag = "v$ver"
-          $zip = "virtual-ac3-encoder-$ver-win64.zip"
-          $exe = "installer/Output/virtual-ac3-encoder-setup-$ver.exe"
+          $zip = "virtual-ac3-control-center-$ver-win64.zip"
           if (gh release view $tag 2>$null) {
             Write-Host "Release $tag already exists; skipping."
             exit 0
           }
           $notes = @"
-          Real-time multichannel PCM -> AC3 (Dolby Digital) -> IEC 61937 / S-PDIF (Toslink) encoder for Windows.
-          A software ``Dolby Digital Live`` / ``DTS Connect``-style tool (SoundPusher-for-Windows). Auto-released on merge to main.
+          Virtual AC3 Encoder Control Center v$ver for Windows.
 
-          ## Downloads
-          - **virtual-ac3-encoder-setup-$ver.exe** - installer (per-user, no admin); auto-starts at logon.
-          - **$zip** - portable build (extract and run ``engine.exe``; see ``QUICKSTART.txt``).
+          Includes the Qt control panels, DSP Studio, AC-3/DTS engine, and default DSP presets. See QUICKSTART.txt and the included docs directory for setup and use.
 
-          ## Requires
-          A virtual audio cable to capture surround audio - install **VB-CABLE** (https://vb-audio.com/Cable/),
-          set ``CABLE Input`` as the default 5.1 device. Plus an optical output that does AC3 passthrough.
-
-          FFmpeg (LGPL) DLLs are bundled; see NOTICE.md for third-party attributions.
+          Requires Windows 10/11 x64 and a compatible S/PDIF output for AC-3/DTS passthrough. See NOTICE.md for third-party license information.
           "@
-          gh release create $tag --title "v$ver" --target "$env:GITHUB_SHA" --notes $notes $zip $exe
+          gh release create $tag --title "Virtual AC3 Encoder Control Center v$ver" --target "$env:GITHUB_SHA" --notes $notes $zip

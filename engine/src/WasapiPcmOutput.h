@@ -4,6 +4,7 @@
 #include "ComUtil.h"
 #include "RingBuffer.h"
 #include "WasapiCapture.h"
+#include "dsp/DspChain.h"
 
 #include <audioclient.h>
 #include <mmdeviceapi.h>
@@ -37,8 +38,15 @@ public:
   // apply; the four surround-channel controls are disabled in the UI.
   void SetChannelGainsDb(const std::array<float, 6>& gainsDb);
 
+  // DSP chain (equalizer + compressor) on the L/R stream; thread-safe. Only the front-left/right
+  // curves of dsp-settings.json apply here. The default parameters are an exact bypass.
+  void SetDspParams(const vac3dsp::DspParams& p) { dsp_.SetParams(p); }
+  vac3dsp::DspMeters TakeDspMeters() { return dsp_.TakeMeters(); }
+  vac3dsp::DspChain& DspChainRef() { return dsp_; }
+
 private:
   void ThreadProc();
+  void ApplyDsp(uint8_t* data, uint32_t frames);
   void ApplyStereoGains(uint8_t* data, uint32_t frames);
 
   ComPtr<IMMDevice> dev_;
@@ -59,6 +67,8 @@ private:
   std::thread thread_;
   std::atomic_bool running_{false};
   std::array<std::atomic<float>, 2> gainsLinear_;
+  vac3dsp::DspChain dsp_;
+  std::vector<float> dspLeft_, dspRight_;  // scratch planes, sized in Init()
   std::vector<uint8_t> inputStaging_;
   uint32_t cycle_ = 0;
 };

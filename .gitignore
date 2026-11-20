@@ -1,44 +1,16 @@
-# Build output
-engine/build/
-driver/build/
-**/build/
-*.obj
-*.exe
-*.lib
-*.dll
-*.pdb
-*.ilk
-*.exp
+# Generated output
+/engine/build/
+/bin/
+/driver/x64/
+/driver/ARM64/
 
-# WDK / MSBuild driver build outputs (intermediates + signed package land in x64/ dirs)
-**/x64/
-**/arm64/
-**/ARM64/
-**/Win32/
-*.sys
-*.cat
-
-# All third-party / fetched / external content is kept out of the repo:
-#   third_party/ffmpeg     - FFmpeg dev libs (re-fetch: scripts/fetch-ffmpeg.ps1)
-#   third_party/reference  - reference clones (SoundPusher, Windows-driver-samples, ...)
-#   third_party/vbcable    - VB-Audio VB-CABLE installer (proprietary; download separately)
-# (use /* so specific entries below can be re-included)
-third_party/*
-# ...except the vendored doctest single-header (MIT) — needed to build the unit tests.
-!third_party/doctest/
-!third_party/doctest/doctest.h
-
-# Test artifacts
-engine/test/*.wav
-engine/test/*.spdif
-engine/test/*.ac3
-
-# Release staging / artifacts
-dist/
-installer/Output/
+# Downloaded dependencies and local build artifacts
+/third_party/ffmpeg/
 *.zip
+*.log
 
-# Editor/OS
+# IDE and user-specific settings
 .vs/
+.vscode/
 *.user
-.DS_Store
+*.suo

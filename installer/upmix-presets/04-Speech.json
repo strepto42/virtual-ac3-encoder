@@ -1,0 +1,14 @@
+{
+  "upmix": {
+    "enabled": true,
+    "center_width": 0.9,
+    "center_focus": 0.3,
+    "center_low_hz": 100,
+    "center_high_hz": 7000,
+    "surround_level_db": -9,
+    "surround_delay_ms": 6,
+    "lfe_enabled": false,
+    "lfe_level_db": -6,
+    "lfe_cut_hz": 100
+  }
+}

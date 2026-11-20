@@ -1,38 +1,29 @@
-Virtual AC3 Encoder - Quick start
-=================================
+Virtual AC3 Encoder Control Center - Quick Start
 
-What it does: encodes your PC's surround audio to AC3 (Dolby Digital) in real time and
-sends it over the optical (Toslink / S-PDIF) output to your AV receiver -- software
-"Dolby Digital Live" / "DTS Connect"-style.
+1. Build the project from source. From the repository root, run:
+       .\build.ps1
+   See docs\BUILDING.md for prerequisites and dependency options.
 
-Requirements
-------------
-1. A virtual audio device to capture surround audio. Install VB-CABLE (free):
-       https://vb-audio.com/Cable/
-   After installing + rebooting, open Windows Sound settings:
-     - Set "CABLE Input (VB-Audio Virtual Cable)" as the DEFAULT playback device.
-     - Right-click it > Configure Speakers > 5.1 Surround.
+2. Install and configure a virtual audio input such as VB-CABLE (https://vb-audio.com/Cable/),
+   unless you use the optional virtual driver. For multichannel modes, configure the Windows
+   playback endpoint as 5.1 and choose its corresponding capture endpoint in the control panel.
 
-2. An optical (S-PDIF / Toslink) output that supports AC3 / Dolby Digital passthrough,
-   connected to your receiver's optical input.
+3. Start one of the control panels:
+       .\bin\ControlCenter_A_Mixer.exe
+       .\bin\ControlCenter_B_Modes.exe
+   Select the capture device, digital output, and AC-3, DTS, or PCM mode, then start the engine.
 
-How it runs
------------
-The engine auto-starts hidden at logon and restarts itself if it stops. It reads its
-settings from  virtual-ac3-encoder.conf  (in this folder).
+4. For AC-3 or DTS over optical, use an S/PDIF output that accepts compressed passthrough and
+   connect it to the receiver. The receiver should lock to Dolby Digital or DTS. PCM Stereo
+   sends ordinary two-channel PCM.
 
-The default config captures "CABLE Output" and sends AC3 to the first S/PDIF output it
-finds. If you have more than one optical output, use the Start Menu > "Edit config"
-shortcut and set, for example:
-       out=Realtek Digital Output
-(use the exact name shown by:  engine.exe --list)
+DSP Studio is available from either Qt control panel or as:
+       .\bin\VirtualAc3-DSP-Studio.exe
 
-Then switch your receiver to the matching optical input -- it should display Dolby Digital.
+Useful engine commands:
+       .\bin\engine.exe --list
+       .\bin\engine.exe --probe
 
-Handy commands (open a terminal in this folder)
------------------------------------------------
-       engine.exe --list      list audio input/output devices
-       engine.exe --probe     show which outputs accept AC3 passthrough
-       engine.exe --version
-
-Project: https://github.com/strepto42/virtual-ac3-encoder
+See docs\QUICKSTART.md for mode descriptions and command-line examples. See docs\ARCHITECTURE.md
+for the audio path and component overview. The optional test-signed driver may require test-signing
+mode and compatible Secure Boot settings; consult docs\BUILDING.md and scripts before installing it.

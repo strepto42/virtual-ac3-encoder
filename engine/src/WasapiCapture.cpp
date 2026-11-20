@@ -5,6 +5,10 @@
 #include <ksmedia.h>
 
 #include <avrt.h>
+
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002 // Windows 10 1803+
+#endif
 #include <vector>
 
 WasapiCapture::~WasapiCapture()
@@ -36,7 +40,9 @@ bool WasapiCapture::Init(IMMDevice* dev, bool loopback)
   // Shared mode. Loopback streams cannot be event-driven, so they are polled instead.
   // periodicity must be 0 in shared mode.
   const DWORD flags = loopback_ ? AUDCLNT_STREAMFLAGS_LOOPBACK : AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
-  REFERENCE_TIME bufferHns = 200000; // 20 ms; WASAPI may enlarge as needed
+  // Event-driven capture: 20 ms. Loopback is polled, so give it 100 ms of slack: a late poll must
+  // never overrun the WASAPI buffer (lost frames are heard as crackling).
+  REFERENCE_TIME bufferHns = loopback_ ? 1000000 : 200000;
   HRESULT hr = client_->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, bufferHns, 0, mix, nullptr);
   CoTaskMemFree(mix);
   if (FAILED(hr)) { std::fprintf(stderr, "[WasapiCapture] Initialize failed: %s\n", HrStr(hr).c_str()); return false; }
@@ -87,6 +93,7 @@ void WasapiCapture::ThreadProc()
   HANDLE mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &taskIndex);
 
   const size_t bpf = fmt_.bytesPerFrame();
+  bool firstPacket = true;
 
   auto drain = [&]() {
     UINT32 packet = 0;
@@ -99,16 +106,22 @@ void WasapiCapture::ThreadProc()
         break;
 
       const size_t bytes = static_cast<size_t>(frames) * bpf;
+      if ((flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) && !firstPacket)
+        discontinuities_.fetch_add(1, std::memory_order_relaxed);
+      firstPacket = false;
       if (flags & AUDCLNT_BUFFERFLAGS_SILENT)
       {
         // Push silence so the timeline stays continuous.
         static thread_local std::vector<uint8_t> zeros;
         if (zeros.size() < bytes) zeros.assign(bytes, 0);
-        ring_->Write(zeros.data(), bytes);
+        if (ring_->Write(zeros.data(), bytes) < bytes)
+          ringOverflows_.fetch_add(1, std::memory_order_relaxed);
       }
       else if (data)
       {
-        ring_->Write(data, bytes); // overflow is dropped by the ring (consumer trims drift)
+        // overflow is dropped by the ring (consumer trims drift)
+        if (ring_->Write(data, bytes) < bytes)
+          ringOverflows_.fetch_add(1, std::memory_order_relaxed);
       }
       capture_->ReleaseBuffer(frames);
     }
@@ -116,12 +129,34 @@ void WasapiCapture::ThreadProc()
 
   if (loopback_)
   {
-    // Loopback streams aren't event-driven: poll, waking early if asked to stop.
-    while (running_.load(std::memory_order_relaxed))
+    // Loopback streams aren't event-driven: poll. A high-resolution waitable timer keeps a steady
+    // ~2 ms cadence even when the system timer runs at its default 15.6 ms resolution (a plain
+    // 5 ms wait could sleep 15-31 ms and overrun the capture buffer).
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                          TIMER_ALL_ACCESS);
+    if (timer)
     {
-      if (WaitForSingleObject(stopEvent_, 5) == WAIT_OBJECT_0) // ~5 ms poll
-        break;
-      drain();
+      LARGE_INTEGER due;
+      due.QuadPart = -20000; // 2 ms, relative
+      SetWaitableTimer(timer, &due, 2, nullptr, nullptr, FALSE);
+      HANDLE waits[2] = { timer, stopEvent_ };
+      while (running_.load(std::memory_order_relaxed))
+      {
+        if (WaitForMultipleObjects(2, waits, FALSE, INFINITE) == WAIT_OBJECT_0 + 1)
+          break;
+        drain();
+      }
+      CancelWaitableTimer(timer);
+      CloseHandle(timer);
+    }
+    else
+    {
+      while (running_.load(std::memory_order_relaxed))
+      {
+        if (WaitForSingleObject(stopEvent_, 2) == WAIT_OBJECT_0)
+          break;
+        drain();
+      }
     }
   }
   else
